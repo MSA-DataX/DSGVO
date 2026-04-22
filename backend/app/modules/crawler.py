@@ -200,11 +200,23 @@ class Crawler:
         html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
 
-        scripts = [
-            urljoin(page.url, s.get("src"))
-            for s in soup.find_all("script")
-            if s.get("src")
-        ]
+        scripts: list[str] = []
+        missing_sri: list[str] = []
+        page_host = urlparse(page.url).hostname or ""
+        for tag in soup.find_all("script"):
+            src = tag.get("src")
+            if not src:
+                continue
+            absolute = urljoin(page.url, src)
+            scripts.append(absolute)
+            # Phase 5 SRI check — cross-origin scripts should carry an
+            # `integrity="sha384-…"` hash. Without it a compromised CDN
+            # can serve altered JS and the browser runs it (see
+            # polyfill.io supply-chain incident, 2024).
+            script_host = urlparse(absolute).hostname or ""
+            if script_host and script_host != page_host and not tag.get("integrity"):
+                missing_sri.append(absolute)
+
         # Also grab <iframe src="..."> — Phase 2 widget detection keys off
         # these to distinguish e.g. youtube.com/embed (tracks) from
         # youtube-nocookie.com/embed (doesn't). Iframes can also be declared
@@ -234,6 +246,7 @@ class Crawler:
             forms=forms,
             storage=storage,
             is_privacy_policy=_looks_like_privacy_policy(page.url, anchor_text),
+            cross_origin_scripts_missing_sri=missing_sri,
         )
 
     @staticmethod

@@ -29,12 +29,15 @@ from urllib.parse import urlparse
 import httpx
 
 from app.models import (
+    DnsSecurityInfo,
     InfoLeakHeader,
     NetworkResult,
+    PageInfo,
     SecurityAudit,
     SecurityHeaderFinding,
     TlsInfo,
 )
+from app.modules.dns_security import audit_dns_security
 
 
 log = logging.getLogger("security_audit")
@@ -210,10 +213,38 @@ async def _fetch_homepage(url: str, user_agent: str) -> httpx.Response | None:
             return None
 
 
+async def _probe_security_txt(base_url: str, user_agent: str) -> str | None:
+    """Probe /.well-known/security.txt per RFC 9116.
+
+    Publishing one isn't legally required but growing expectation: it
+    advertises the operator's vulnerability-disclosure contact, which
+    speeds Art. 33 breach-notification coordination. Single HEAD
+    request, no content parsing.
+    """
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    candidate = f"{parsed.scheme}://{parsed.netloc}/.well-known/security.txt"
+    async with httpx.AsyncClient(
+        timeout=4.0, follow_redirects=True,
+        headers={"user-agent": user_agent},
+    ) as client:
+        try:
+            r = await client.head(candidate)
+            if r.status_code == 405:  # HEAD disallowed → retry GET
+                r = await client.get(candidate)
+            if 200 <= r.status_code < 300:
+                return str(r.url)
+        except Exception:
+            return None
+    return None
+
+
 async def audit_security(
     target: str,
     network: NetworkResult,
     user_agent: str,
+    pages: list[PageInfo] | None = None,
 ) -> SecurityAudit:
     # --- 1. Fetch homepage with redirect tracking ----------------------
     resp = await _fetch_homepage(target, user_agent)
@@ -335,7 +366,27 @@ async def audit_security(
                 if len(mixed_samples) < 5:
                     mixed_samples.append(r.url)
 
-    # --- 6. Summary ----------------------------------------------------
+    # --- 6. Aggregate cross-origin scripts missing SRI from pages ------
+    sri_missing: list[str] = []
+    if pages:
+        seen: set[str] = set()
+        for p in pages:
+            for u in p.cross_origin_scripts_missing_sri:
+                if u in seen:
+                    continue
+                seen.add(u)
+                sri_missing.append(u)
+
+    # --- 7. Parallel probes: security.txt + DNS security ---------------
+    # Both are independent of each other and of everything above, so fire
+    # them concurrently. Each is individually tolerant of failure.
+    security_txt_task = asyncio.create_task(_probe_security_txt(target, user_agent))
+    dns_task = asyncio.create_task(audit_dns_security(target))
+    security_txt_url, dns_info = await asyncio.gather(
+        security_txt_task, dns_task, return_exceptions=False,
+    )
+
+    # --- 8. Summary ----------------------------------------------------
     summary = {
         "total_headers_checked": len(findings),
         "headers_missing_or_weak_high":
@@ -346,6 +397,8 @@ async def audit_security(
             sum(1 for f in findings if not f.present and f.severity == "low"),
         "info_leak_headers": len(info_leaks),
         "mixed_content_requests": mixed_count,
+        "sri_missing_count": len(sri_missing),
+        "security_txt_present": 1 if security_txt_url else 0,
     }
 
     return SecurityAudit(
@@ -355,5 +408,8 @@ async def audit_security(
         mixed_content_count=mixed_count,
         mixed_content_samples=mixed_samples,
         info_leak_headers=info_leaks,
+        security_txt_url=security_txt_url,
+        sri_missing=sri_missing,
+        dns=dns_info,
         summary=summary,
     )

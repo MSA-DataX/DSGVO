@@ -200,6 +200,33 @@ const EN: Dict = {
   "security.footer":         "All checks are passive (same info any browser visit reveals). No active probing, no directory bruteforce, no exploit attempts — compliant with § 202c StGB.",
   "security.error":          "Audit could not complete:",
 
+  // Phase 5 — DNS / security.txt / SRI
+  "security.dns.title":      "DNS hardening",
+  "security.dns.spf":        "SPF",
+  "security.dns.dmarc":      "DMARC",
+  "security.dns.dnssec":     "DNSSEC",
+  "security.dns.caa":        "CAA",
+  "security.dns.present":    "present",
+  "security.dns.missing":    "missing",
+  "security.dns.policy":     "policy",
+  "security.sri.title":      "Subresource Integrity",
+  "security.sri.missing":    "{count} cross-origin script(s) without integrity hash",
+  "security.sri.ok":         "All cross-origin scripts use Subresource Integrity",
+  "security.securityTxt.title":   "security.txt",
+  "security.securityTxt.present": "published",
+  "security.securityTxt.missing": "missing (RFC 9116 best practice)",
+
+  // Vulnerable libraries
+  "vulnLibs.title":          "Known-vulnerable JavaScript libraries",
+  "vulnLibs.desc":           "{total} finding(s) — {high} high, {medium} medium, {low} low severity.",
+  "vulnLibs.empty":          "No libraries with known vulnerabilities detected.",
+  "vulnLibs.h.lib":          "Library",
+  "vulnLibs.h.version":      "Detected",
+  "vulnLibs.h.severity":     "Severity",
+  "vulnLibs.h.fixed":        "Fixed in",
+  "vulnLibs.h.cves":         "CVE(s)",
+  "vulnLibs.h.advisory":     "Advisory",
+
   // first-party scripts
   "firstParty.title":        "First-party assets",
   "firstParty.desc":         "{count} unique URL(s) loaded from your own origin — {scripts} script(s), {styles} stylesheet(s), {apis} XHR/fetch call(s). Useful for documentation and for catching what external “beacon” scanners misattribute to third parties.",
@@ -231,6 +258,17 @@ const EN: Dict = {
 
   // common
   "common.scanId":           "Scan",
+
+  // Chapters + jump nav
+  "chapter.kicker":          "Chapter",
+  "chapter.privacy.title":   "GDPR / Privacy",
+  "chapter.privacy.ref":     "Articles 5, 6, 13, 25 GDPR · findings about data processing, consent, and transparency.",
+  "chapter.security.title":  "Security & Art. 32 GDPR (TOM)",
+  "chapter.security.ref":    "Technical & organisational measures · passive observations of transport encryption, headers, DNS, vulnerable libraries.",
+  "nav.jumpTo":              "Jump to",
+  "nav.overview":            "Overview",
+  "nav.privacy":             "Privacy",
+  "nav.security":            "Security",
 };
 
 const DE: Dict = {
@@ -414,6 +452,33 @@ const DE: Dict = {
   "security.footer":         "Alle Prüfungen passiv (selbe Info die jeder Browser-Besuch offenbart). Kein aktives Probing, kein Directory-Bruteforce, keine Exploit-Versuche — konform § 202c StGB.",
   "security.error":          "Audit konnte nicht durchgeführt werden:",
 
+  // Phase 5 — DNS / security.txt / SRI
+  "security.dns.title":      "DNS-Härtung",
+  "security.dns.spf":        "SPF",
+  "security.dns.dmarc":      "DMARC",
+  "security.dns.dnssec":     "DNSSEC",
+  "security.dns.caa":        "CAA",
+  "security.dns.present":    "vorhanden",
+  "security.dns.missing":    "fehlt",
+  "security.dns.policy":     "Policy",
+  "security.sri.title":      "Subresource Integrity",
+  "security.sri.missing":    "{count} Cross-Origin-Skript(e) ohne Integrity-Hash",
+  "security.sri.ok":         "Alle Cross-Origin-Skripte nutzen Subresource Integrity",
+  "security.securityTxt.title":   "security.txt",
+  "security.securityTxt.present": "veröffentlicht",
+  "security.securityTxt.missing": "fehlt (RFC-9116-Best-Practice)",
+
+  // Verwundbare Libraries
+  "vulnLibs.title":          "Bekannte verwundbare JavaScript-Libraries",
+  "vulnLibs.desc":           "{total} Finding(s) — {high} hoch, {medium} mittel, {low} niedrig.",
+  "vulnLibs.empty":          "Keine Libraries mit bekannten Schwachstellen erkannt.",
+  "vulnLibs.h.lib":          "Library",
+  "vulnLibs.h.version":      "Erkannte Version",
+  "vulnLibs.h.severity":     "Schwere",
+  "vulnLibs.h.fixed":        "Fix in",
+  "vulnLibs.h.cves":         "CVE(s)",
+  "vulnLibs.h.advisory":     "Hinweis",
+
   // first-party
   "firstParty.title":        "Eigene Assets",
   "firstParty.desc":         "{count} einzigartige URL(s) aus eigener Origin — {scripts} Skript(e), {styles} Stylesheet(s), {apis} XHR/fetch-Aufruf(e). Nützlich für Dokumentation und um zu sehen was externe \"Beacon\"-Scanner fälschlich als Drittanbieter ausgeben.",
@@ -445,6 +510,17 @@ const DE: Dict = {
 
   // common
   "common.scanId":           "Scan",
+
+  // Kapitel + Sprung-Navigation
+  "chapter.kicker":          "Kapitel",
+  "chapter.privacy.title":   "DSGVO / Privacy",
+  "chapter.privacy.ref":     "Art. 5, 6, 13, 25 DSGVO · Findings zu Datenverarbeitung, Consent und Transparenz.",
+  "chapter.security.title":  "Security & Art. 32 DSGVO (TOM)",
+  "chapter.security.ref":    "Technische und organisatorische Maßnahmen · passive Beobachtungen zu Transportverschlüsselung, Headern, DNS, verwundbaren Libraries.",
+  "nav.jumpTo":              "Springe zu",
+  "nav.overview":            "Übersicht",
+  "nav.privacy":             "Privacy",
+  "nav.security":            "Security",
 };
 
 const DICTS: Record<Lang, Dict> = { en: EN, de: DE };

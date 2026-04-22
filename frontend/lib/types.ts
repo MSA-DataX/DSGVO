@@ -261,6 +261,35 @@ export interface InfoLeakHeader {
   leaks: string;
 }
 
+export type DmarcPolicy = "none" | "quarantine" | "reject" | "unknown" | "missing";
+
+export interface DnsSecurityInfo {
+  domain: string;
+  spf_present: boolean;
+  spf_record: string | null;
+  dmarc_present: boolean;
+  dmarc_policy: DmarcPolicy;
+  dmarc_record: string | null;
+  dnssec_enabled: boolean;
+  caa_present: boolean;
+  error: string | null;
+}
+
+export interface VulnerableLibrary {
+  library: string;
+  detected_version: string;
+  url: string;
+  severity: Severity;
+  cves: string[];
+  advisory: string | null;
+  fixed_in: string | null;
+}
+
+export interface VulnerableLibrariesReport {
+  libraries: VulnerableLibrary[];
+  summary: Record<string, number>;
+}
+
 export interface SecurityAudit {
   final_url: string;
   headers: SecurityHeaderFinding[];
@@ -268,6 +297,9 @@ export interface SecurityAudit {
   mixed_content_count: number;
   mixed_content_samples: string[];
   info_leak_headers: InfoLeakHeader[];
+  security_txt_url?: string | null;
+  sri_missing?: string[];
+  dns?: DnsSecurityInfo | null;
   summary: Record<string, number>;
   error: string | null;
 }
@@ -351,6 +383,7 @@ export interface ScanResponse {
   contact_channels: ContactChannelsReport;
   widgets: ThirdPartyWidgetsReport;
   security?: SecurityAudit | null;
+  vulnerable_libraries?: VulnerableLibrariesReport | null;
   consent?: ConsentSimulation | null;
   id?: string | null;
   created_at?: string | null;

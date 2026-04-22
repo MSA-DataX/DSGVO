@@ -1,7 +1,10 @@
+"use client";
+
 import { Check, X } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { useLang } from "@/lib/LanguageContext";
 import type { FormPurpose, FormReport } from "@/lib/types";
 
 const PURPOSE_STYLE: Record<FormPurpose, string> = {
@@ -11,21 +14,15 @@ const PURPOSE_STYLE: Record<FormPurpose, string> = {
   unknown:        "bg-slate-500/10 text-slate-600 dark:text-slate-400",
 };
 
-const PURPOSE_LABEL: Record<FormPurpose, string> = {
-  collection:     "collection",
-  search:         "search",
-  authentication: "auth",
-  unknown:        "unknown",
-};
-
 export function FormsSection({ report }: { report: FormReport }) {
+  const { t } = useLang();
   const s = report.summary;
   if (report.forms.length === 0) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Forms</CardTitle>
-          <CardDescription>No forms detected on the crawled pages.</CardDescription>
+          <CardTitle>{t("forms.title")}</CardTitle>
+          <CardDescription>{t("forms.empty")}</CardDescription>
         </CardHeader>
       </Card>
     );
@@ -33,13 +30,18 @@ export function FormsSection({ report }: { report: FormReport }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Forms</CardTitle>
+        <CardTitle>{t("forms.title")}</CardTitle>
         <CardDescription>
-          {s.total_forms ?? 0} form(s) — {s.forms_collecting_pii ?? 0} collect personal data,{" "}
-          {s.forms_with_consent_checkbox ?? 0} have a consent checkbox, {s.forms_with_privacy_link ?? 0} link to
-          the privacy policy.
+          {t("forms.desc", {
+            total: s.total_forms ?? 0,
+            pii: s.forms_collecting_pii ?? 0,
+            consent: s.forms_with_consent_checkbox ?? 0,
+            link: s.forms_with_privacy_link ?? 0,
+          })}
           {((s.forms_search ?? 0) > 0 || (s.forms_authentication ?? 0) > 0) && (
-            <span className="text-xs"> · {s.forms_search ?? 0} search, {s.forms_authentication ?? 0} auth (excluded from PII counts)</span>
+            <span className="text-xs">
+              {t("forms.searchExcluded", { search: s.forms_search ?? 0, auth: s.forms_authentication ?? 0 })}
+            </span>
           )}
         </CardDescription>
       </CardHeader>
@@ -52,17 +54,17 @@ export function FormsSection({ report }: { report: FormReport }) {
                   <div className="flex items-center gap-2 text-left">
                     <Badge variant="outline" className="font-mono text-[10px]">{f.method}</Badge>
                     <Badge className={`text-[10px] uppercase ${PURPOSE_STYLE[f.purpose]}`}>
-                      {PURPOSE_LABEL[f.purpose]}
+                      {t(`forms.purpose.${f.purpose}`)}
                     </Badge>
                     <span className="truncate text-sm">{f.page_url}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     {f.issues.length > 0 ? (
                       <Badge className="bg-risk-high/10 text-risk-high">
-                        {f.issues.length} issue{f.issues.length === 1 ? "" : "s"}
+                        {t("forms.issues", { count: f.issues.length })}
                       </Badge>
                     ) : (
-                      <Badge className="bg-risk-low/10 text-risk-low">OK</Badge>
+                      <Badge className="bg-risk-low/10 text-risk-low">{t("forms.ok")}</Badge>
                     )}
                   </div>
                 </div>
@@ -70,16 +72,16 @@ export function FormsSection({ report }: { report: FormReport }) {
               <AccordionContent>
                 <div className="space-y-3 text-sm">
                   <div>
-                    <div className="text-xs uppercase text-muted-foreground">Action</div>
+                    <div className="text-xs uppercase text-muted-foreground">{t("forms.action")}</div>
                     <code className="text-xs">{f.form_action ?? "—"}</code>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Field label="Consent checkbox" ok={f.has_consent_checkbox} />
-                    <Field label="Privacy link" ok={f.has_privacy_link} />
+                    <Field label={t("forms.field.consent")} ok={f.has_consent_checkbox} />
+                    <Field label={t("forms.field.privacy")} ok={f.has_privacy_link} />
                   </div>
                   {f.collected_data.length > 0 && (
                     <div>
-                      <div className="text-xs uppercase text-muted-foreground">Data collected</div>
+                      <div className="text-xs uppercase text-muted-foreground">{t("forms.data")}</div>
                       <div className="mt-1 flex flex-wrap gap-1">
                         {f.collected_data.map((c) => (
                           <Badge key={c} variant="outline" className="text-xs">{c}</Badge>
@@ -89,7 +91,7 @@ export function FormsSection({ report }: { report: FormReport }) {
                   )}
                   {f.legal_text_excerpt && (
                     <div>
-                      <div className="text-xs uppercase text-muted-foreground">Legal text excerpt</div>
+                      <div className="text-xs uppercase text-muted-foreground">{t("forms.legal")}</div>
                       <blockquote className="mt-1 border-l-2 pl-3 text-xs italic text-muted-foreground">
                         {f.legal_text_excerpt}
                       </blockquote>

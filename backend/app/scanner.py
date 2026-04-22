@@ -54,6 +54,7 @@ from app.modules.policy_extractor import (
     probe_imprint_paths,
     truncate_for_model,
 )
+from app.modules.retire_js import detect_vulnerable_libraries
 from app.modules.scoring import compute_risk
 from app.modules.security_audit import audit_security
 from app.modules.third_party_widgets import detect_widgets
@@ -293,10 +294,12 @@ async def run_scan(
                 "auth": widgets.summary.get("category_auth", 0),
                 "non_enhanced_video": widgets.summary.get("non_enhanced_video", 0)})
 
-    # --- passive security audit (HTTP headers + TLS + mixed content) ----
-    p.emit("form_analysis", "Auditing HTTP security headers and TLS…")
+    # --- passive security audit (HTTP headers + TLS + mixed content +
+    #     DNS + security.txt + SRI) ----------------------------------------
+    p.emit("form_analysis", "Auditing HTTP headers, TLS, DNS, security.txt, SRI…")
     security = await audit_security(
         target=target, network=pre.network, user_agent=settings.scan_user_agent,
+        pages=pre.crawl.pages,
     )
     p.emit("form_analysis",
            f"Security audit: {security.summary.get('headers_missing_or_weak_high', 0)} critical, "
@@ -304,7 +307,18 @@ async def run_scan(
            {"high": security.summary.get("headers_missing_or_weak_high", 0),
             "medium": security.summary.get("headers_missing_or_weak_medium", 0),
             "mixed_content": security.mixed_content_count,
-            "https_enforced": bool(security.tls and security.tls.https_enforced)})
+            "https_enforced": bool(security.tls and security.tls.https_enforced),
+            "sri_missing": len(security.sri_missing),
+            "security_txt": bool(security.security_txt_url),
+            "dmarc_policy": security.dns.dmarc_policy if security.dns else "missing"})
+
+    # --- vulnerable JS libraries (Retire.js-style) ----------------------
+    vulnerable_libs = detect_vulnerable_libraries(pre.network)
+    if vulnerable_libs.libraries:
+        p.emit("form_analysis",
+               f"Detected {len(vulnerable_libs.libraries)} JS library finding(s) with known CVEs",
+               {"high": vulnerable_libs.summary.get("high", 0),
+                "medium": vulnerable_libs.summary.get("medium", 0)})
 
     # --- imprint probing (parallel to policy probing above) -------------
     # The crawler may already have seen a link; fall back to common paths
@@ -381,6 +395,7 @@ async def run_scan(
         consent=consent_block,
         security=security,
         lang=req.ui_language,
+        libs=vulnerable_libs,
     )
     p.emit("scoring", f"Final score: {risk.score}/100 ({risk.rating})",
            {"score": risk.score, "rating": risk.rating,
@@ -393,6 +408,7 @@ async def run_scan(
         privacy_analysis=privacy_analysis, forms=form_report,
         contact_channels=contact_channels, widgets=widgets,
         security=security,
+        vulnerable_libraries=vulnerable_libs,
         consent=consent_block,
     )
 

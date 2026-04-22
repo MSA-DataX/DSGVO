@@ -24,6 +24,7 @@ score uses the same scale and is bucketed into a 4-tier risk rating.
 
 from __future__ import annotations
 
+import time
 from urllib.parse import urlparse
 
 from app.models import (
@@ -41,8 +42,14 @@ from app.models import (
     SubScore,
     ThirdPartyWidgetsReport,
     UiLanguage,
+    VulnerableLibrariesReport,
 )
 from app.modules.form_analyzer import PII_CATEGORIES
+
+# Maximum recommended cookie retention under EDPB guidance (13 months).
+# Expressed in seconds for direct comparison against the unix-epoch
+# `expires` field Playwright returns.
+_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 395
 
 
 def _t(lang: UiLanguage, en: str, de: str) -> str:
@@ -280,6 +287,7 @@ def _compute_caps(
     widgets: ThirdPartyWidgetsReport,
     consent: ConsentSimulation | None,
     security: SecurityAudit | None,
+    libs: VulnerableLibrariesReport | None = None,
 ) -> list[HardCap]:
     caps: list[HardCap] = []
     has_cmp = _has_consent_cmp(cookies)
@@ -498,6 +506,40 @@ def _compute_caps(
                     cap_value=75,
                 ))
 
+        # --- Phase 5: DNS security ------------------------------------
+        # No SPF + no DMARC means the domain can be spoofed for phishing
+        # against its own users. Not strictly GDPR Art. 32 (the ePrivacy /
+        # BSI C5 space is closer), but enforced by BSI "Mindeststandards"
+        # for federal agencies and reasonable for any operator that
+        # processes personal data via email.
+        if security.dns is not None:
+            d = security.dns
+            if not d.spf_present and (not d.dmarc_present or d.dmarc_policy == "none"):
+                caps.append(HardCap(
+                    code="no_email_authentication",
+                    description="Neither SPF nor an enforcing DMARC policy is published for this domain. Attackers can forge emails in the operator's name without any DNS-level defence — direct phishing risk against customers and employees.",
+                    cap_value=75,
+                ))
+
+    # --- Phase 5: vulnerable JavaScript libraries -----------------------
+    # Running a library with a published CVE is the textbook Art. 32 DSGVO
+    # failure: a known, fixable defect that the operator has the time and
+    # means to address. Cap scales with severity of the worst finding.
+    if libs is not None and libs.libraries:
+        has_high = any(v.severity == "high" for v in libs.libraries)
+        if has_high:
+            caps.append(HardCap(
+                code="known_vulnerable_library",
+                description=f"Site loads {libs.summary.get('high', 0)} JavaScript library/libraries with HIGH-severity CVEs. Known exploitable vulnerabilities — exactly what Art. 32 GDPR requires operators to patch.",
+                cap_value=55,
+            ))
+        else:
+            caps.append(HardCap(
+                code="outdated_vulnerable_library",
+                description=f"Site loads {len(libs.libraries)} JavaScript library/libraries with published vulnerabilities of medium severity.",
+                cap_value=75,
+            ))
+
     return caps
 
 
@@ -516,6 +558,7 @@ def _build_recommendations(
     security: SecurityAudit | None,
     caps: list[HardCap],
     lang: UiLanguage = "en",
+    libs: VulnerableLibrariesReport | None = None,
 ) -> list[Recommendation]:
     recs: list[Recommendation] = []
 
@@ -960,6 +1003,160 @@ def _build_recommendations(
                 related=[h.name for h in security.info_leak_headers],
             ))
 
+        # --- Phase 5: SRI + security.txt + DNS ------------------------
+        if security.sri_missing:
+            sample = ", ".join(security.sri_missing[:3])
+            more_en = f" (+{len(security.sri_missing) - 3} more)" if len(security.sri_missing) > 3 else ""
+            more_de = f" (+{len(security.sri_missing) - 3} weitere)" if len(security.sri_missing) > 3 else ""
+            recs.append(Recommendation(
+                priority="medium",
+                title=_t(lang,
+                    "Add Subresource Integrity (SRI) to third-party scripts",
+                    "Subresource Integrity (SRI) für Drittanbieter-Skripte ergänzen"),
+                detail=_t(lang,
+                    f"{len(security.sri_missing)} cross-origin script(s) load without an "
+                    f"`integrity=\"sha384-...\"` attribute: {sample}{more_en}. A compromised CDN "
+                    f"could serve altered JS that the browser would execute (cf. polyfill.io "
+                    f"supply-chain incident, 2024). Fix: generate the hash once "
+                    f"(`openssl dgst -sha384 -binary file.js | openssl base64 -A`) and add "
+                    f"`integrity=\"sha384-<hash>\" crossorigin=\"anonymous\"` to each <script> "
+                    f"tag that loads from a third-party origin.",
+                    f"{len(security.sri_missing)} Cross-Origin-Skript(e) laden ohne "
+                    f"`integrity=\"sha384-...\"`-Attribut: {sample}{more_de}. Ein kompromittiertes "
+                    f"CDN könnte veränderten JS-Code ausliefern, den der Browser ausführt "
+                    f"(vgl. polyfill.io Supply-Chain-Vorfall 2024). Fix: Hash einmal generieren "
+                    f"(`openssl dgst -sha384 -binary file.js | openssl base64 -A`) und "
+                    f"`integrity=\"sha384-<hash>\" crossorigin=\"anonymous\"` zu jedem "
+                    f"Drittanbieter-<script>-Tag hinzufügen."),
+                related=security.sri_missing[:5],
+            ))
+
+        if not security.security_txt_url:
+            recs.append(Recommendation(
+                priority="low",
+                title=_t(lang,
+                    "Publish a security.txt (RFC 9116)",
+                    "security.txt veröffentlichen (RFC 9116)"),
+                detail=_t(lang,
+                    "No /.well-known/security.txt present. This file advertises your vulnerability-"
+                    "disclosure contact and speeds Art. 33 GDPR breach-notification coordination. "
+                    "Minimal content at `/.well-known/security.txt`:\n\n"
+                    "Contact: mailto:security@example.com\n"
+                    "Expires: 2027-01-01T00:00:00Z\n"
+                    "Preferred-Languages: de, en\n"
+                    "Policy: https://example.com/security-policy",
+                    "Keine /.well-known/security.txt vorhanden. Diese Datei macht den "
+                    "Sicherheits-Disclosure-Kontakt öffentlich und beschleunigt die "
+                    "Koordination von Art. 33 DSGVO Meldungen. Minimaler Inhalt unter "
+                    "`/.well-known/security.txt`:\n\n"
+                    "Contact: mailto:security@example.com\n"
+                    "Expires: 2027-01-01T00:00:00Z\n"
+                    "Preferred-Languages: de, en\n"
+                    "Policy: https://example.com/security-policy"),
+                related=["security.txt"],
+            ))
+
+        # DNS: SPF / DMARC / DNSSEC / CAA
+        if security.dns is not None:
+            dns = security.dns
+            dns_issues: list[str] = []
+            if not dns.spf_present:
+                dns_issues.append("SPF")
+            if not dns.dmarc_present or dns.dmarc_policy in ("none", "missing"):
+                dns_issues.append("DMARC" + (f" (p={dns.dmarc_policy})" if dns.dmarc_present else ""))
+            if not dns.dnssec_enabled:
+                dns_issues.append("DNSSEC")
+            if not dns.caa_present:
+                dns_issues.append("CAA")
+            if dns_issues:
+                recs.append(Recommendation(
+                    priority="high" if ("SPF" in dns_issues or "DMARC" in " ".join(dns_issues)) else "medium",
+                    title=_t(lang,
+                        "Harden DNS: publish SPF, DMARC, DNSSEC and CAA records",
+                        "DNS härten: SPF, DMARC, DNSSEC und CAA veröffentlichen"),
+                    detail=_t(lang,
+                        f"Missing or weak DNS defences: {', '.join(dns_issues)}. Minimal records:\n\n"
+                        f"SPF   (TXT @)            : `v=spf1 -all`   (if domain sends no mail; otherwise list your senders and end with `-all` or `~all`)\n"
+                        f"DMARC (TXT _dmarc)       : `v=DMARC1; p=reject; rua=mailto:dmarc@{dns.domain}`\n"
+                        f"DNSSEC                   : enable at your registrar or DNS host; they publish the DS record in the parent zone\n"
+                        f"CAA   (CAA @)            : `0 issue \"letsencrypt.org\"` (allow only the CA you actually use)",
+                        f"Fehlende oder schwache DNS-Schutzmaßnahmen: {', '.join(dns_issues)}. Minimale Records:\n\n"
+                        f"SPF   (TXT @)            : `v=spf1 -all`   (wenn die Domain keine Mails versendet; sonst eigene Sender auflisten und mit `-all` oder `~all` abschließen)\n"
+                        f"DMARC (TXT _dmarc)       : `v=DMARC1; p=reject; rua=mailto:dmarc@{dns.domain}`\n"
+                        f"DNSSEC                   : beim Registrar oder DNS-Host aktivieren; dieser veröffentlicht den DS-Record in der Parent-Zone\n"
+                        f"CAA   (CAA @)            : `0 issue \"letsencrypt.org\"` (nur die tatsächlich genutzte CA erlauben)"),
+                    related=dns_issues,
+                ))
+
+    # --- Phase 5: vulnerable JS libraries ------------------------------
+    if libs is not None and libs.libraries:
+        # Group by library+version so we don't repeat the same advisory once
+        # per page the script was loaded on.
+        seen_libs: set[tuple[str, str]] = set()
+        unique_libs: list = []
+        for v in libs.libraries:
+            key = (v.library, v.detected_version)
+            if key in seen_libs:
+                continue
+            seen_libs.add(key)
+            unique_libs.append(v)
+        names = ", ".join(f"{v.library}@{v.detected_version}" for v in unique_libs[:5])
+        worst = max(
+            (v.severity for v in unique_libs),
+            key=lambda s: {"high": 2, "medium": 1, "low": 0}.get(s, 0),
+            default="medium",
+        )
+        recs.append(Recommendation(
+            priority=worst,  # type: ignore[arg-type]
+            title=_t(lang,
+                "Upgrade JavaScript libraries with published CVEs",
+                "JavaScript-Libraries mit veröffentlichten CVEs aktualisieren"),
+            detail=_t(lang,
+                f"Detected {len(unique_libs)} library version(s) with known vulnerabilities: "
+                f"{names}{' (+ more)' if len(unique_libs) > 5 else ''}. Art. 32 GDPR requires "
+                f"operators to keep software current against known threats. Check the affected "
+                f"CVEs for each library — most have been fixed in minor releases.",
+                f"Erkannt: {len(unique_libs)} Library-Version(en) mit bekannten Schwachstellen: "
+                f"{names}{' (+ weitere)' if len(unique_libs) > 5 else ''}. Art. 32 DSGVO "
+                f"verlangt, dass Betreiber Software gegen bekannte Bedrohungen aktuell halten. "
+                f"Betroffene CVEs je Library prüfen — die meisten wurden in Minor-Releases "
+                f"behoben."),
+            related=[f"{v.library}@{v.detected_version}" for v in unique_libs],
+        ))
+
+    # --- Phase 5: Cookie retention (> 13 months) -----------------------
+    # EDPB Guidelines 5/2020 recommend 13 months max for marketing/analytics
+    # cookies. We flag any cookie (third-party or first-party, marketing/
+    # analytics category) with a longer `expires`.
+    now = time.time()
+    excessive = [
+        c for c in cookies.cookies
+        if c.expires is not None
+        and not c.is_session
+        and c.category in ("marketing", "analytics")
+        and (c.expires - now) > _COOKIE_MAX_AGE_SECONDS
+    ]
+    if excessive:
+        sample = ", ".join(sorted({c.name for c in excessive}))[:200]
+        recs.append(Recommendation(
+            priority="medium",
+            title=_t(lang,
+                "Shorten cookie retention to ≤ 13 months (EDPB 5/2020)",
+                "Cookie-Speicherdauer auf ≤ 13 Monate verkürzen (EDPB 5/2020)"),
+            detail=_t(lang,
+                f"{len(excessive)} marketing/analytics cookie(s) have an `expires` date more than "
+                f"13 months in the future: {sample}. EDPB Guidelines 5/2020 recommend 13 months as "
+                f"the upper bound. Fix: set `Max-Age` at cookie creation (or let the CMP manage "
+                f"expiry). GA4 stores 13-month limit in the 'Data retention' property; "
+                f"Facebook Pixel rolls at 90 days per default.",
+                f"{len(excessive)} Marketing-/Analytics-Cookie(s) haben ein `expires`-Datum "
+                f"mehr als 13 Monate in der Zukunft: {sample}. EDPB-Leitlinien 5/2020 empfehlen "
+                f"13 Monate als Obergrenze. Fix: `Max-Age` beim Setzen des Cookies konfigurieren "
+                f"(oder die CMP die Expiry verwalten lassen). GA4 hat dafür die Eigenschaft "
+                f"'Data retention'; Facebook Pixel default-t auf 90 Tage."),
+            related=[c.name for c in excessive[:10]],
+        ))
+
     # --- Google Fonts (LG München I 2022) ------------------------------
     if "google_fonts_external" in cap_codes:
         recs.append(Recommendation(
@@ -1202,6 +1399,7 @@ def compute_risk(
     consent: ConsentSimulation | None = None,
     security: SecurityAudit | None = None,
     lang: UiLanguage = "en",
+    libs: VulnerableLibrariesReport | None = None,
 ) -> RiskScore:
     sub_scores = [
         _score_cookies(cookies),
@@ -1217,7 +1415,7 @@ def compute_risk(
         cookies=cookies, network=network, privacy=privacy,
         has_policy=has_policy, has_imprint=has_imprint,
         channels=channels, widgets=widgets, consent=consent,
-        security=security,
+        security=security, libs=libs,
     )
     final = weighted
     for cap in caps:
@@ -1226,7 +1424,7 @@ def compute_risk(
 
     recommendations = _build_recommendations(
         cookies, network, privacy, forms, channels, widgets, consent, security, caps,
-        lang=lang,
+        lang=lang, libs=libs,
     )
 
     return RiskScore(

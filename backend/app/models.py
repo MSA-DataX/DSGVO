@@ -119,6 +119,10 @@ class PageInfo(BaseModel):
     forms: list[FormInfo] = []
     storage: list[StorageItem] = []
     is_privacy_policy: bool = False
+    # Cross-origin <script> tags declared without an `integrity=` attribute.
+    # Supply-chain-attack exposure: a compromised CDN could serve altered
+    # JavaScript and the browser would execute it without complaint.
+    cross_origin_scripts_missing_sri: list[str] = []
 
 
 class NetworkRequest(BaseModel):
@@ -319,6 +323,43 @@ class InfoLeakHeader(BaseModel):
     leaks: str                                  # short description of what's exposed
 
 
+DmarcPolicy = Literal["none", "quarantine", "reject", "unknown", "missing"]
+
+
+class DnsSecurityInfo(BaseModel):
+    """Public DNS observations about the scanned domain.
+
+    Everything here comes from ordinary DNS queries — same information
+    every mail server and CA does when deciding whether to trust the
+    domain. No active probing.
+    """
+    domain: str                                 # registered domain we queried
+    spf_present: bool
+    spf_record: str | None = None
+    dmarc_present: bool
+    dmarc_policy: DmarcPolicy
+    dmarc_record: str | None = None
+    dnssec_enabled: bool                        # AD flag set by resolver OR DNSKEY present
+    caa_present: bool                           # CAA records restrict cert-issuing CAs
+    error: str | None = None                    # set when resolver was unreachable
+
+
+class VulnerableLibrary(BaseModel):
+    """One detected JavaScript library with known CVE(s)."""
+    library: str                                # "jquery"
+    detected_version: str                       # "1.11.0"
+    url: str                                    # where we saw the file on the scanned site
+    severity: Severity                          # worst CVE in the range
+    cves: list[str] = []                        # ["CVE-2015-9251"]
+    advisory: str | None = None                 # short summary of what it's vulnerable to
+    fixed_in: str | None = None                 # first version that fixes it
+
+
+class VulnerableLibrariesReport(BaseModel):
+    libraries: list[VulnerableLibrary]
+    summary: dict[str, int] = {}                # totals by severity
+
+
 class SecurityAudit(BaseModel):
     final_url: str                              # URL after following HTTPS redirects
     headers: list[SecurityHeaderFinding]
@@ -326,6 +367,10 @@ class SecurityAudit(BaseModel):
     mixed_content_count: int = 0                # HTTP resources loaded from HTTPS page
     mixed_content_samples: list[str] = []       # up to 5 example URLs
     info_leak_headers: list[InfoLeakHeader] = []
+    # Phase 5 additions — passive infrastructure signals
+    security_txt_url: str | None = None         # URL if /.well-known/security.txt exists
+    sri_missing: list[str] = []                 # cross-origin script URLs without integrity=
+    dns: DnsSecurityInfo | None = None          # DNS-level security record checks
     summary: dict[str, int] = {}                # high/medium/low counts + totals
     error: str | None = None                    # populated when the homepage fetch failed
 
@@ -419,6 +464,7 @@ class ScanResponse(BaseModel):
     contact_channels: ContactChannelsReport
     widgets: ThirdPartyWidgetsReport
     security: SecurityAudit | None = None
+    vulnerable_libraries: VulnerableLibrariesReport | None = None
     consent: ConsentSimulation | None = None
     # Populated by storage.save_scan(). Not set during scan execution.
     id: str | None = None

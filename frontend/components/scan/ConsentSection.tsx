@@ -1,20 +1,35 @@
+"use client";
+
 import { CheckCircle2, AlertTriangle, MousePointerClick, Info, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { categoryColor, countryColor, severityColor } from "@/lib/utils";
+import { useLang } from "@/lib/LanguageContext";
+import type { Lang } from "@/lib/i18n";
 import type { ConsentSimulation, ConsentUxAudit, DarkPatternCode } from "@/lib/types";
 
-const DARK_PATTERN_LABEL: Record<DarkPatternCode, string> = {
-  no_direct_reject:         "No first-level Reject button",
-  reject_via_text_fallback: "Reject matched via loose text heuristic",
-  reject_much_smaller:      "Reject button significantly smaller than Accept",
-  reject_below_fold:        "Reject button below the viewport",
-  reject_low_prominence:    "Reject styled less prominently",
-  forced_interaction:       "Banner blocks content without opt-out",
+const DARK_PATTERN_LABEL: Record<Lang, Record<DarkPatternCode, string>> = {
+  en: {
+    no_direct_reject:         "No first-level Reject button",
+    reject_via_text_fallback: "Reject matched via loose text heuristic",
+    reject_much_smaller:      "Reject button significantly smaller than Accept",
+    reject_below_fold:        "Reject button below the viewport",
+    reject_low_prominence:    "Reject styled less prominently",
+    forced_interaction:       "Banner blocks content without opt-out",
+  },
+  de: {
+    no_direct_reject:         "Kein Ablehnen-Button auf erster Ebene",
+    reject_via_text_fallback: "Ablehnen nur über Text-Heuristik erkannt",
+    reject_much_smaller:      "Ablehnen-Button deutlich kleiner als Akzeptieren",
+    reject_below_fold:        "Ablehnen-Button unterhalb des Viewports",
+    reject_low_prominence:    "Ablehnen weniger prominent gestaltet",
+    forced_interaction:       "Banner blockiert Content ohne Opt-out",
+  },
 };
 
 export function ConsentSection({ consent }: { consent: ConsentSimulation }) {
+  const { t } = useLang();
   const diff = consent.diff;
   const noDiff =
     diff &&
@@ -29,7 +44,7 @@ export function ConsentSection({ consent }: { consent: ConsentSimulation }) {
         <div className="flex items-start justify-between gap-3">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <MousePointerClick className="h-5 w-5" /> Consent simulation
+              <MousePointerClick className="h-5 w-5" /> {t("consent.title")}
             </CardTitle>
             <CardDescription>{consent.note}</CardDescription>
           </div>
@@ -46,33 +61,26 @@ export function ConsentSection({ consent }: { consent: ConsentSimulation }) {
         {!consent.accept_clicked && (
           <Alert>
             <Info className="h-4 w-4" />
-            <AlertTitle>No banner clicked</AlertTitle>
-            <AlertDescription>
-              Either the site has no cookie banner, or our detection didn't recognize it. The pre/post
-              diff below is unlikely to be meaningful.
-            </AlertDescription>
+            <AlertTitle>{t("consent.noBanner.title")}</AlertTitle>
+            <AlertDescription>{t("consent.noBanner.desc")}</AlertDescription>
           </Alert>
         )}
 
         {diff && noDiff && consent.accept_clicked && (
           <Alert>
             <CheckCircle2 className="h-4 w-4 text-risk-low" />
-            <AlertTitle>No additional tracking after consent</AlertTitle>
-            <AlertDescription>
-              Clicking “Accept all” triggered no new cookies, storage entries, or third-party
-              requests. Either the site does no tracking, or it was already loading everything
-              pre-consent (which would be a separate finding).
-            </AlertDescription>
+            <AlertTitle>{t("consent.clean.title")}</AlertTitle>
+            <AlertDescription>{t("consent.clean.desc")}</AlertDescription>
           </Alert>
         )}
 
         {diff && !noDiff && (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Stat label="New cookies" value={diff.new_cookies.length} />
-              <Stat label="New storage" value={diff.new_storage.length} />
-              <Stat label="New domains" value={diff.new_data_flow.length} />
-              <Stat label="Extra requests" value={diff.extra_request_count} />
+              <Stat label={t("consent.stat.newCookies")} value={diff.new_cookies.length} />
+              <Stat label={t("consent.stat.newStorage")} value={diff.new_storage.length} />
+              <Stat label={t("consent.stat.newDomains")} value={diff.new_data_flow.length} />
+              <Stat label={t("consent.stat.extraReq")} value={diff.extra_request_count} />
             </div>
 
             {(diff.new_marketing_count > 0 || diff.new_analytics_count > 0) && (
@@ -166,11 +174,11 @@ export function ConsentSection({ consent }: { consent: ConsentSimulation }) {
 
         <div className="grid grid-cols-2 gap-3 border-t pt-3 text-xs text-muted-foreground">
           <div>
-            <div className="font-medium text-foreground">Pre-consent</div>
+            <div className="font-medium text-foreground">{t("consent.pre")}</div>
             <div>{consent.pre_summary.total_cookies ?? 0} cookies · {consent.pre_summary.total_storage ?? 0} storage</div>
           </div>
           <div>
-            <div className="font-medium text-foreground">Post-consent</div>
+            <div className="font-medium text-foreground">{t("consent.post")}</div>
             <div>{consent.post_summary.total_cookies ?? 0} cookies · {consent.post_summary.total_storage ?? 0} storage</div>
           </div>
         </div>
@@ -191,6 +199,7 @@ function Stat({ label, value }: { label: string; value: number }) {
 // -- Consent UX / Dark-pattern audit (Phase 3) ----------------------------
 
 function UxAuditBlock({ audit }: { audit: ConsentUxAudit }) {
+  const { t, lang } = useLang();
   if (!audit.banner_detected) {
     return null; // No findings to show when there was no banner to measure
   }
@@ -200,11 +209,8 @@ function UxAuditBlock({ audit }: { audit: ConsentUxAudit }) {
     return (
       <Alert>
         <ShieldCheck className="h-4 w-4 text-risk-low" />
-        <AlertTitle>Consent banner UX looks clean</AlertTitle>
-        <AlertDescription>
-          Accept and Reject buttons are present at the same level, comparable in size and
-          prominence. No dark patterns detected.
-        </AlertDescription>
+        <AlertTitle>{t("consent.ux.clean.title")}</AlertTitle>
+        <AlertDescription>{t("consent.ux.clean.desc")}</AlertDescription>
       </Alert>
     );
   }
@@ -214,7 +220,7 @@ function UxAuditBlock({ audit }: { audit: ConsentUxAudit }) {
       <div className="flex items-center gap-2 border-b border-risk-high/30 p-3">
         <ShieldAlert className="h-4 w-4 text-risk-high" />
         <div className="text-sm font-medium text-risk-high">
-          Consent banner dark patterns ({findings.length})
+          {t("consent.ux.dark.title", { count: findings.length })}
         </div>
       </div>
       <ul className="divide-y">
@@ -222,10 +228,10 @@ function UxAuditBlock({ audit }: { audit: ConsentUxAudit }) {
           <li key={i} className="space-y-1 p-3">
             <div className="flex items-center gap-2">
               <Badge className={`text-[10px] ${severityColor(f.severity)}`}>
-                {f.severity}
+                {t(`severity.${f.severity}`)}
               </Badge>
               <span className="text-sm font-medium">
-                {DARK_PATTERN_LABEL[f.code] ?? f.code}
+                {DARK_PATTERN_LABEL[lang][f.code] ?? f.code}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">{f.description}</p>
@@ -247,7 +253,7 @@ function UxAuditBlock({ audit }: { audit: ConsentUxAudit }) {
       {audit.accept_metrics && audit.reject_metrics && (
         <div className="grid grid-cols-2 gap-3 border-t border-risk-high/30 p-3 text-[11px] text-muted-foreground">
           <div>
-            <div className="font-medium text-foreground">Accept button</div>
+            <div className="font-medium text-foreground">{t("consent.ux.acceptBtn")}</div>
             <div>
               {Math.round(Number(audit.accept_metrics["width"]) || 0)}×
               {Math.round(Number(audit.accept_metrics["height"]) || 0)} px ·{" "}
@@ -256,7 +262,7 @@ function UxAuditBlock({ audit }: { audit: ConsentUxAudit }) {
             </div>
           </div>
           <div>
-            <div className="font-medium text-foreground">Reject button</div>
+            <div className="font-medium text-foreground">{t("consent.ux.rejectBtn")}</div>
             <div>
               {Math.round(Number(audit.reject_metrics["width"]) || 0)}×
               {Math.round(Number(audit.reject_metrics["height"]) || 0)} px ·{" "}

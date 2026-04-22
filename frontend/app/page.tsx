@@ -20,8 +20,10 @@ import { FirstPartyScriptsSection } from "@/components/scan/FirstPartyScriptsSec
 import { ContactChannelsSection } from "@/components/scan/ContactChannelsSection";
 import { ThirdPartyWidgetsSection } from "@/components/scan/ThirdPartyWidgetsSection";
 import { SecurityAuditSection } from "@/components/scan/SecurityAuditSection";
+import { VulnerableLibrariesSection } from "@/components/scan/VulnerableLibrariesSection";
 import { PrivacyAnalysisCard } from "@/components/scan/PrivacyAnalysisCard";
 import { FormsSection } from "@/components/scan/FormsSection";
+import { ChapterHeader } from "@/components/scan/ChapterHeader";
 import { getScan, streamScan } from "@/lib/api";
 import type { ProgressEvent, ScanResponse } from "@/lib/types";
 
@@ -139,43 +141,91 @@ function Results({ result }: { result: ScanResponse }) {
   const { t } = useLang();
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* -- Top strip: scan meta + jump nav + export --------------- */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-xs text-muted-foreground">
           {result.id && <>{t("common.scanId")} <code className="font-mono">{result.id}</code>{" · "}</>}
           {result.created_at && new Date(result.created_at).toLocaleString()}
         </div>
-        <ExportButton result={result} />
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <RiskScoreCard risk={result.risk} target={result.target} />
+        <div className="flex items-center gap-3">
+          <JumpNav />
+          <ExportButton result={result} />
         </div>
-        <SubScoresCard subScores={result.risk.sub_scores} />
       </div>
 
-      <HardCapsList caps={result.risk.applied_caps} />
+      {/* -- Overview (cross-cutting, no chapter header) ------------
+          Score + sub-scores + hard caps + recommendations are
+          audience-agnostic: legal, security and management all read
+          these first. Everything below is grouped by audience. */}
+      <div id="overview" className="scroll-mt-20 space-y-6">
+        <div className="grid gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <RiskScoreCard risk={result.risk} target={result.target} />
+          </div>
+          <SubScoresCard subScores={result.risk.sub_scores} />
+        </div>
 
-      {result.consent && <ConsentSection consent={result.consent} />}
+        <HardCapsList caps={result.risk.applied_caps} />
 
-      <RecommendationsList recs={result.risk.recommendations} />
+        <RecommendationsList recs={result.risk.recommendations} />
+      </div>
+
+      {/* -- Chapter 1: GDPR / Privacy ------------------------------ */}
+      <ChapterHeader
+        id="chapter-privacy"
+        number={1}
+        titleKey="chapter.privacy.title"
+        refKey="chapter.privacy.ref"
+      />
+
+      <PrivacyAnalysisCard analysis={result.privacy_analysis} />
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <DataFlowTable flow={result.network.data_flow} />
         <CookiesSection report={result.cookies} />
+        <DataFlowTable flow={result.network.data_flow} />
       </div>
 
-      {result.security && <SecurityAuditSection audit={result.security} />}
+      {result.consent && <ConsentSection consent={result.consent} />}
 
       <ContactChannelsSection report={result.contact_channels} />
 
       <ThirdPartyWidgetsSection report={result.widgets} />
 
-      <FirstPartyScriptsSection network={result.network} />
-
-      <PrivacyAnalysisCard analysis={result.privacy_analysis} />
-
       <FormsSection report={result.forms} />
+
+      {/* -- Chapter 2: Security & Art. 32 GDPR (TOM) --------------- */}
+      <ChapterHeader
+        id="chapter-security"
+        number={2}
+        titleKey="chapter.security.title"
+        refKey="chapter.security.ref"
+      />
+
+      {result.security && <SecurityAuditSection audit={result.security} />}
+
+      {result.vulnerable_libraries && (
+        <VulnerableLibrariesSection report={result.vulnerable_libraries} />
+      )}
+
+      <FirstPartyScriptsSection network={result.network} />
     </div>
+  );
+}
+
+// Inline jump-nav shown in the results header strip. Anchors into the
+// scroll-mt-20 targets above. Hidden on narrow screens where the scroll
+// is short anyway and the chip row would wrap to two lines.
+function JumpNav() {
+  const { t } = useLang();
+  const link = "rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors";
+  return (
+    <nav className="hidden items-center gap-1 rounded-md border bg-muted/30 p-0.5 md:flex">
+      <span className="px-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+        {t("nav.jumpTo")}
+      </span>
+      <a href="#overview"         className={link}>{t("nav.overview")}</a>
+      <a href="#chapter-privacy"  className={link}>{t("nav.privacy")}</a>
+      <a href="#chapter-security" className={link}>{t("nav.security")}</a>
+    </nav>
   );
 }

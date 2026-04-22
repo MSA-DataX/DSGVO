@@ -8,6 +8,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { countryColor } from "@/lib/utils";
+import { useLang } from "@/lib/LanguageContext";
 import type { ContactChannel, ContactChannelKind, ContactChannelsReport } from "@/lib/types";
 
 // Why a dedicated section: clicking a WhatsApp button ships the user's
@@ -59,6 +60,7 @@ function iconFor(kind: ContactChannelKind) {
 }
 
 export function ContactChannelsSection({ report }: { report: ContactChannelsReport }) {
+  const { t } = useLang();
   const [open, setOpen] = React.useState(true);
   if (report.channels.length === 0) return null;
 
@@ -77,12 +79,10 @@ export function ContactChannelsSection({ report }: { report: ContactChannelsRepo
           <div>
             <CardTitle className="flex items-center gap-2">
               <MessageCircle className="h-5 w-5" />
-              Contact channels
+              {t("channels.title")}
             </CardTitle>
             <CardDescription>
-              {report.channels.length} exposed channel(s) — {us} route data outside the EU/EEA,{" "}
-              {unknown} to an unknown jurisdiction. Each non-EU channel must be named + legally
-              justified in the privacy policy (Art. 13 + third-country safeguards).
+              {t("channels.desc", { count: report.channels.length, us, unknown })}
             </CardDescription>
           </div>
           {open ? (
@@ -126,6 +126,7 @@ function KindBlock({
   kind: ContactChannelKind;
   items: ContactChannel[];
 }) {
+  const { t } = useLang();
   const first = items[0];
   return (
     <div className="rounded-md border p-3">
@@ -135,7 +136,7 @@ function KindBlock({
           {KIND_LABEL[kind]}
         </span>
         <span className="text-xs text-muted-foreground">
-          {items.length}× detected
+          {t("channels.detected", { n: items.length })}
         </span>
         {first.vendor && (
           <Badge variant="outline" className="text-[10px]">
@@ -153,13 +154,13 @@ function KindBlock({
               {c.target}
             </code>
             <span className="text-[10px] text-muted-foreground">
-              on {c.pages.length} page{c.pages.length === 1 ? "" : "s"}
+              {t("channels.onPages", { count: c.pages.length })}
             </span>
           </li>
         ))}
         {items.length > 8 && (
           <li className="text-xs text-muted-foreground">
-            …and {items.length - 8} more
+            …{items.length - 8} more
           </li>
         )}
       </ul>

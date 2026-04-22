@@ -8,6 +8,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { countryColor } from "@/lib/utils";
+import { useLang } from "@/lib/LanguageContext";
 import type {
   ThirdPartyWidget, ThirdPartyWidgetsReport, WidgetCategory, WidgetKind,
 } from "@/lib/types";
@@ -17,15 +18,6 @@ import type {
 // "gate behind consent". Auth → "load lazily". The summary line on top
 // highlights the one that matters most — tracking-variant videos — since
 // they're the cheapest to fix (swap hostname) and most common finding.
-
-const CATEGORY_LABEL: Record<WidgetCategory, string> = {
-  video:        "Video embeds",
-  map:          "Map embeds",
-  chat:         "Chat widgets",
-  auth:         "Social-login SDKs",
-  social_embed: "Social embeds",
-  other:        "Other widgets",
-};
 
 const CATEGORY_ORDER: WidgetCategory[] = [
   "video", "map", "chat", "auth", "social_embed", "other",
@@ -80,6 +72,7 @@ function kindLabel(k: WidgetKind): string {
 }
 
 export function ThirdPartyWidgetsSection({ report }: { report: ThirdPartyWidgetsReport }) {
+  const { t } = useLang();
   const [open, setOpen] = React.useState(true);
   if (report.widgets.length === 0) return null;
 
@@ -102,12 +95,16 @@ export function ThirdPartyWidgetsSection({ report }: { report: ThirdPartyWidgets
           <div>
             <CardTitle className="flex items-center gap-2">
               <Share2 className="h-5 w-5" />
-              Third-party widgets
+              {t("widgets.title")}
             </CardTitle>
             <CardDescription>
-              {report.widgets.length} widget(s) embedded on the site —{" "}
-              {nonEnhancedVideo} tracking-variant video(s), {chatCount} chat,{" "}
-              {authCount} social-login SDK(s), {enhanced} privacy-enhanced.
+              {t("widgets.desc", {
+                total: report.widgets.length,
+                video: nonEnhancedVideo,
+                chat: chatCount,
+                auth: authCount,
+                enhanced,
+              })}
             </CardDescription>
           </div>
           {open ? (
@@ -147,11 +144,12 @@ function CategoryBlock({
   category: WidgetCategory;
   items: ThirdPartyWidget[];
 }) {
+  const { t } = useLang();
   return (
     <div className="rounded-md border p-3">
       <div className="mb-2 flex items-center gap-2">
         {iconForCategory(category)}
-        <span className="text-sm font-medium">{CATEGORY_LABEL[category]}</span>
+        <span className="text-sm font-medium">{t(`widgets.cat.${category}`)}</span>
         <span className="text-xs text-muted-foreground">({items.length})</span>
       </div>
       <ul className="space-y-2">
@@ -167,19 +165,19 @@ function CategoryBlock({
             {w.privacy_enhanced ? (
               <Badge className="bg-risk-low/10 text-risk-low text-[10px]">
                 <Shield className="mr-1 h-3 w-3" />
-                privacy-enhanced
+                {t("widgets.tag.enhanced")}
               </Badge>
             ) : w.requires_consent ? (
               <Badge className="bg-risk-high/10 text-risk-high text-[10px]">
                 <ShieldAlert className="mr-1 h-3 w-3" />
-                tracking variant
+                {t("widgets.tag.tracking")}
               </Badge>
             ) : null}
             <code className="flex-1 min-w-0 break-all font-mono text-[11px] text-muted-foreground">
               {w.src}
             </code>
             <span className="text-[10px] text-muted-foreground">
-              on {w.pages.length || 0} page{w.pages.length === 1 ? "" : "s"}
+              {t("widgets.onPages", { count: w.pages.length || 0 })}
             </span>
           </li>
         ))}

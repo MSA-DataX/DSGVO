@@ -5,31 +5,37 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { categoryColor } from "@/lib/utils";
-import type { CookieReport } from "@/lib/types";
+import { useLang } from "@/lib/LanguageContext";
+import type { CookieCategory, CookieReport } from "@/lib/types";
 
 export function CookiesSection({ report }: { report: CookieReport }) {
+  const { t } = useLang();
   const s = report.summary;
-  const totals = [
-    ["Necessary", s.cookies_necessary ?? 0, "necessary"],
-    ["Functional", s.cookies_functional ?? 0, "functional"],
-    ["Analytics", s.cookies_analytics ?? 0, "analytics"],
-    ["Marketing", s.cookies_marketing ?? 0, "marketing"],
-    ["Unknown", s.cookies_unknown ?? 0, "unknown"],
-  ] as const;
+  const totals: [string, number, CookieCategory][] = [
+    [t("category.necessary"),  s.cookies_necessary  ?? 0, "necessary"],
+    [t("category.functional"), s.cookies_functional ?? 0, "functional"],
+    [t("category.analytics"),  s.cookies_analytics  ?? 0, "analytics"],
+    [t("category.marketing"),  s.cookies_marketing  ?? 0, "marketing"],
+    [t("category.unknown"),    s.cookies_unknown    ?? 0, "unknown"],
+  ];
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Cookies & Web Storage</CardTitle>
+        <CardTitle>{t("cookies.title")}</CardTitle>
         <CardDescription>
-          {s.total_cookies ?? 0} cookies ({s.third_party_cookies ?? 0} third-party,{" "}
-          {s.session_cookies ?? 0} session-only) · {s.total_storage ?? 0} storage entries
+          {t("cookies.desc", {
+            total: s.total_cookies ?? 0,
+            thirdParty: s.third_party_cookies ?? 0,
+            session: s.session_cookies ?? 0,
+            storage: s.total_storage ?? 0,
+          })}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="mb-4 flex flex-wrap gap-2">
           {totals.map(([label, count, key]) => (
-            <Badge key={key} className={categoryColor(key as any)}>
+            <Badge key={key} className={categoryColor(key)}>
               {label}: {count}
             </Badge>
           ))}
@@ -37,8 +43,8 @@ export function CookiesSection({ report }: { report: CookieReport }) {
 
         <Tabs defaultValue="cookies">
           <TabsList>
-            <TabsTrigger value="cookies">Cookies ({report.cookies.length})</TabsTrigger>
-            <TabsTrigger value="storage">Storage ({report.storage.length})</TabsTrigger>
+            <TabsTrigger value="cookies">{t("cookies.tab.cookies")} ({report.cookies.length})</TabsTrigger>
+            <TabsTrigger value="storage">{t("cookies.tab.storage")} ({report.storage.length})</TabsTrigger>
           </TabsList>
 
           <TabsContent value="cookies">
@@ -54,17 +60,18 @@ export function CookiesSection({ report }: { report: CookieReport }) {
 }
 
 function CookieTable({ rows }: { rows: CookieReport["cookies"] }) {
+  const { t } = useLang();
   if (rows.length === 0) return <Empty />;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-            <th className="py-2 pr-3">Name</th>
-            <th className="py-2 pr-3">Domain</th>
-            <th className="py-2 pr-3">Category</th>
-            <th className="py-2 pr-3">Vendor</th>
-            <th className="py-2 pr-3">Reason</th>
+            <th className="py-2 pr-3">{t("cookies.h.name")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.domain")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.category")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.vendor")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.reason")}</th>
           </tr>
         </thead>
         <tbody>
@@ -74,11 +81,11 @@ function CookieTable({ rows }: { rows: CookieReport["cookies"] }) {
               <td className="py-2 pr-3 font-mono text-xs">
                 {c.domain}{" "}
                 {c.is_third_party && (
-                  <Badge variant="outline" className="ml-1 text-[10px]">3rd-party</Badge>
+                  <Badge variant="outline" className="ml-1 text-[10px]">{t("cookies.thirdParty")}</Badge>
                 )}
               </td>
               <td className="py-2 pr-3">
-                <Badge className={categoryColor(c.category)}>{c.category}</Badge>
+                <Badge className={categoryColor(c.category)}>{t(`category.${c.category}`)}</Badge>
               </td>
               <td className="py-2 pr-3 text-xs">{c.vendor ?? "—"}</td>
               <td className="py-2 pr-3 text-xs text-muted-foreground">{c.reason}</td>
@@ -91,17 +98,18 @@ function CookieTable({ rows }: { rows: CookieReport["cookies"] }) {
 }
 
 function StorageTable({ rows }: { rows: CookieReport["storage"] }) {
+  const { t } = useLang();
   if (rows.length === 0) return <Empty />;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-            <th className="py-2 pr-3">Key</th>
-            <th className="py-2 pr-3">Kind</th>
-            <th className="py-2 pr-3">Category</th>
-            <th className="py-2 pr-3">Vendor</th>
-            <th className="py-2 pr-3">Reason</th>
+            <th className="py-2 pr-3">{t("cookies.h.key")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.kind")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.category")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.vendor")}</th>
+            <th className="py-2 pr-3">{t("cookies.h.reason")}</th>
           </tr>
         </thead>
         <tbody>
@@ -110,7 +118,7 @@ function StorageTable({ rows }: { rows: CookieReport["storage"] }) {
               <td className="py-2 pr-3 font-mono text-xs">{s.key}</td>
               <td className="py-2 pr-3 text-xs">{s.kind}</td>
               <td className="py-2 pr-3">
-                <Badge className={categoryColor(s.category)}>{s.category}</Badge>
+                <Badge className={categoryColor(s.category)}>{t(`category.${s.category}`)}</Badge>
               </td>
               <td className="py-2 pr-3 text-xs">{s.vendor ?? "—"}</td>
               <td className="py-2 pr-3 text-xs text-muted-foreground">{s.reason}</td>
@@ -123,5 +131,6 @@ function StorageTable({ rows }: { rows: CookieReport["storage"] }) {
 }
 
 function Empty() {
-  return <p className="py-3 text-sm text-muted-foreground">Nothing to show.</p>;
+  const { t } = useLang();
+  return <p className="py-3 text-sm text-muted-foreground">{t("cookies.empty")}</p>;
 }

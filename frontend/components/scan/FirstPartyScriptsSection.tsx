@@ -4,6 +4,7 @@ import * as React from "react";
 import { ChevronDown, ChevronRight, FileCode } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { useLang } from "@/lib/LanguageContext";
 import type { NetworkResult } from "@/lib/types";
 
 // Aggregates first-party script/stylesheet loads so the operator can
@@ -49,6 +50,7 @@ const TYPE_STYLE: Record<string, string> = {
 };
 
 export function FirstPartyScriptsSection({ network }: { network: NetworkResult }) {
+  const { t } = useLang();
   const [open, setOpen] = React.useState(false);
   const groups = React.useMemo(() => aggregate(network), [network]);
 
@@ -69,13 +71,10 @@ export function FirstPartyScriptsSection({ network }: { network: NetworkResult }
           <div>
             <CardTitle className="flex items-center gap-2 text-base">
               <FileCode className="h-4 w-4" />
-              First-party assets
+              {t("firstParty.title")}
             </CardTitle>
             <CardDescription>
-              {groups.length} unique URL(s) loaded from your own origin —{" "}
-              {scripts} script(s), {styles} stylesheet(s), {apis} XHR/fetch call(s). Useful for
-              documentation and for catching what external “beacon” scanners misattribute to
-              third parties.
+              {t("firstParty.desc", { count: groups.length, scripts, styles, apis })}
             </CardDescription>
           </div>
           {open ? (
@@ -91,9 +90,9 @@ export function FirstPartyScriptsSection({ network }: { network: NetworkResult }
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="py-2 pr-3">Type</th>
-                  <th className="py-2 pr-3">URL</th>
-                  <th className="py-2 pr-3 text-right">Requests</th>
+                  <th className="py-2 pr-3">{t("firstParty.h.type")}</th>
+                  <th className="py-2 pr-3">{t("firstParty.h.url")}</th>
+                  <th className="py-2 pr-3 text-right">{t("firstParty.h.requests")}</th>
                 </tr>
               </thead>
               <tbody>
