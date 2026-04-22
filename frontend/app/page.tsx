@@ -2,6 +2,8 @@
 
 import * as React from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { useLang } from "@/lib/LanguageContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScanForm } from "@/components/scan/ScanForm";
 import { ScanProgress } from "@/components/scan/ScanProgress";
@@ -17,12 +19,14 @@ import { CookiesSection } from "@/components/scan/CookiesSection";
 import { FirstPartyScriptsSection } from "@/components/scan/FirstPartyScriptsSection";
 import { ContactChannelsSection } from "@/components/scan/ContactChannelsSection";
 import { ThirdPartyWidgetsSection } from "@/components/scan/ThirdPartyWidgetsSection";
+import { SecurityAuditSection } from "@/components/scan/SecurityAuditSection";
 import { PrivacyAnalysisCard } from "@/components/scan/PrivacyAnalysisCard";
 import { FormsSection } from "@/components/scan/FormsSection";
 import { getScan, streamScan } from "@/lib/api";
 import type { ProgressEvent, ScanResponse } from "@/lib/types";
 
 export default function Home() {
+  const { t, lang } = useLang();
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<ScanResponse | null>(null);
@@ -52,7 +56,7 @@ export default function Home() {
 
     try {
       await streamScan(
-        { url, ...opts },
+        { url, ...opts, ui_language: lang },
         {
           onProgress: (ev) => setEvents((prev) => [...prev, ev]),
           onResult: (r) => {
@@ -93,11 +97,12 @@ export default function Home() {
           alt="MSA DataX"
           className="h-12 w-auto rounded-md"
         />
-        <div className="sm:text-right">
-          <h1 className="text-xl font-semibold">GDPR Compliance Scanner</h1>
-          <p className="text-sm text-muted-foreground">
-            Crawler · network capture · cookie analysis · AI privacy review · risk score.
-          </p>
+        <div className="flex items-start gap-4 sm:text-right">
+          <div className="flex-1">
+            <h1 className="text-xl font-semibold">{t("app.title")}</h1>
+            <p className="text-sm text-muted-foreground">{t("app.subtitle")}</p>
+          </div>
+          <LanguageSwitcher />
         </div>
       </header>
 
@@ -111,7 +116,7 @@ export default function Home() {
 
       {error && (
         <Alert variant="destructive" className="mb-6">
-          <AlertTitle>Scan failed</AlertTitle>
+          <AlertTitle>{t("progress.failed")}</AlertTitle>
           <AlertDescription className="font-mono text-xs">{error}</AlertDescription>
         </Alert>
       )}
@@ -131,11 +136,12 @@ export default function Home() {
 }
 
 function Results({ result }: { result: ScanResponse }) {
+  const { t } = useLang();
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">
-          {result.id && <>Scan <code className="font-mono">{result.id}</code>{" · "}</>}
+          {result.id && <>{t("common.scanId")} <code className="font-mono">{result.id}</code>{" · "}</>}
           {result.created_at && new Date(result.created_at).toLocaleString()}
         </div>
         <ExportButton result={result} />
@@ -158,6 +164,8 @@ function Results({ result }: { result: ScanResponse }) {
         <DataFlowTable flow={result.network.data_flow} />
         <CookiesSection report={result.cookies} />
       </div>
+
+      {result.security && <SecurityAuditSection audit={result.security} />}
 
       <ContactChannelsSection report={result.contact_channels} />
 

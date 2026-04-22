@@ -61,6 +61,9 @@ PolicyIssueCategory = Literal[
 ]
 
 
+UiLanguage = Literal["en", "de"]
+
+
 class ScanRequest(BaseModel):
     url: HttpUrl
     max_depth: int | None = Field(default=None, ge=0, le=3)
@@ -73,6 +76,12 @@ class ScanRequest(BaseModel):
     # — useful for large corporate sites where the link is buried in a
     # lazy-loaded footer and our BFS crawl misses it.
     privacy_policy_url: HttpUrl | None = None
+    # Language for backend-generated prose (recommendations, AI summary,
+    # AI issue descriptions). The UI chrome is translated client-side;
+    # this field covers the content the server produces. Defaults to
+    # English for CLI / API users; the dashboard always sends its current
+    # language.
+    ui_language: UiLanguage = "en"
 
 
 class FormField(BaseModel):
@@ -279,6 +288,48 @@ class ThirdPartyWidgetsReport(BaseModel):
     summary: dict[str, int]
 
 
+# ---------------------------------------------------------------------------
+# Passive security audit (Phase 4)
+# All observations below come from inspecting the HTTP/TLS handshake and
+# response headers only — i.e. information any normal browser visit would
+# reveal. No active probing.
+# ---------------------------------------------------------------------------
+
+class SecurityHeaderFinding(BaseModel):
+    name: str                                   # canonical header name
+    present: bool
+    value: str | None = None                    # actual header value if present
+    severity: Severity                          # missing critical header → high
+    note: str                                   # what's correct / what's wrong
+
+
+class TlsInfo(BaseModel):
+    https_enforced: bool                        # plain HTTP → 301/302 to HTTPS?
+    tls_version: str | None = None              # "TLSv1.3" / "TLSv1.2" / …
+    cert_expires_days: int | None = None        # None if parse failed
+    cert_issuer: str | None = None
+    hsts_max_age_days: int | None = None        # parsed from HSTS header
+    hsts_include_subdomains: bool = False
+    hsts_preload_eligible: bool = False         # has preload + includeSubdomains + max-age ≥ 1y
+
+
+class InfoLeakHeader(BaseModel):
+    name: str                                   # "Server" / "X-Powered-By" / …
+    value: str
+    leaks: str                                  # short description of what's exposed
+
+
+class SecurityAudit(BaseModel):
+    final_url: str                              # URL after following HTTPS redirects
+    headers: list[SecurityHeaderFinding]
+    tls: TlsInfo | None = None
+    mixed_content_count: int = 0                # HTTP resources loaded from HTTPS page
+    mixed_content_samples: list[str] = []       # up to 5 example URLs
+    info_leak_headers: list[InfoLeakHeader] = []
+    summary: dict[str, int] = {}                # high/medium/low counts + totals
+    error: str | None = None                    # populated when the homepage fetch failed
+
+
 class SubScore(BaseModel):
     name: str                          # cookies | tracking | data_transfer | privacy | forms
     score: int = Field(ge=0, le=100)   # higher = better
@@ -367,6 +418,7 @@ class ScanResponse(BaseModel):
     forms: FormReport
     contact_channels: ContactChannelsReport
     widgets: ThirdPartyWidgetsReport
+    security: SecurityAudit | None = None
     consent: ConsentSimulation | None = None
     # Populated by storage.save_scan(). Not set during scan execution.
     id: str | None = None

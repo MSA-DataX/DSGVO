@@ -1,14 +1,9 @@
+"use client";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { useLang } from "@/lib/LanguageContext";
 import type { SubScore } from "@/lib/types";
-
-const NICE_NAME: Record<string, string> = {
-  cookies: "Cookies",
-  tracking: "Tracking & web storage",
-  data_transfer: "Data transfer",
-  privacy: "Privacy policy",
-  forms: "Forms",
-};
 
 function indicatorFor(score: number): string {
   if (score >= 80) return "bg-risk-low";
@@ -18,18 +13,22 @@ function indicatorFor(score: number): string {
 }
 
 export function SubScoresCard({ subScores }: { subScores: SubScore[] }) {
+  const { t } = useLang();
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Sub-scores</CardTitle>
+        <CardTitle>{t("sub.title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {subScores.map((s) => (
           <div key={s.name}>
             <div className="mb-1 flex items-baseline justify-between">
-              <span className="text-sm font-medium">{NICE_NAME[s.name] ?? s.name}</span>
+              <span className="text-sm font-medium">{t(`sub.name.${s.name}`)}</span>
               <span className="text-xs text-muted-foreground">
-                weight {Math.round(s.weight * 100)}% · contributes {s.weighted_contribution.toFixed(1)}
+                {t("sub.weight", {
+                  pct: Math.round(s.weight * 100),
+                  value: s.weighted_contribution.toFixed(1),
+                })}
               </span>
             </div>
             <div className="flex items-center gap-3">

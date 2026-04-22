@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { deleteScan, listScans } from "@/lib/api";
 import { ratingBg } from "@/lib/utils";
+import { useLang } from "@/lib/LanguageContext";
 import type { ScanListItem } from "@/lib/types";
 
 function formatWhen(iso: string): string {
@@ -22,6 +23,7 @@ export function ScanHistory({
   onLoad: (id: string) => void;
   activeId?: string | null;
 }) {
+  const { t } = useLang();
   const [items, setItems] = React.useState<ScanListItem[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -56,10 +58,10 @@ export function ScanHistory({
       <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
         <div>
           <CardTitle className="flex items-center gap-2 text-base">
-            <History className="h-4 w-4" /> Scan history
+            <History className="h-4 w-4" /> {t("history.title")}
           </CardTitle>
           <CardDescription>
-            {items ? `${items.length} recent scan(s)` : "Loading…"}
+            {items ? t("history.count", { count: items.length }) : t("history.loading")}
           </CardDescription>
         </div>
         <Button variant="ghost" size="sm" onClick={refresh} disabled={loading}>
@@ -69,7 +71,7 @@ export function ScanHistory({
       <CardContent>
         {error && <p className="text-sm text-risk-high">{error}</p>}
         {items && items.length === 0 && (
-          <p className="text-sm text-muted-foreground">No scans yet. Run one above.</p>
+          <p className="text-sm text-muted-foreground">{t("history.empty")}</p>
         )}
         <ul className="divide-y">
           {items?.map((s) => (

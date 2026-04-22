@@ -55,6 +55,7 @@ from app.modules.policy_extractor import (
     truncate_for_model,
 )
 from app.modules.scoring import compute_risk
+from app.modules.security_audit import audit_security
 from app.modules.third_party_widgets import detect_widgets
 from app.progress import NoopReporter, ProgressReporter
 
@@ -292,6 +293,19 @@ async def run_scan(
                 "auth": widgets.summary.get("category_auth", 0),
                 "non_enhanced_video": widgets.summary.get("non_enhanced_video", 0)})
 
+    # --- passive security audit (HTTP headers + TLS + mixed content) ----
+    p.emit("form_analysis", "Auditing HTTP security headers and TLS…")
+    security = await audit_security(
+        target=target, network=pre.network, user_agent=settings.scan_user_agent,
+    )
+    p.emit("form_analysis",
+           f"Security audit: {security.summary.get('headers_missing_or_weak_high', 0)} critical, "
+           f"{security.summary.get('headers_missing_or_weak_medium', 0)} medium header issue(s)",
+           {"high": security.summary.get("headers_missing_or_weak_high", 0),
+            "medium": security.summary.get("headers_missing_or_weak_medium", 0),
+            "mixed_content": security.mixed_content_count,
+            "https_enforced": bool(security.tls and security.tls.https_enforced)})
+
     # --- imprint probing (parallel to policy probing above) -------------
     # The crawler may already have seen a link; fall back to common paths
     # via cheap httpx HEAD requests if not.
@@ -314,7 +328,7 @@ async def run_scan(
     privacy_analysis = await _run_ai_analysis(
         ai_provider, pre, policy_url, p,
         channels=contact_channels, imprint_url=imprint_url,
-        widgets=widgets,
+        widgets=widgets, lang=req.ui_language,
     )
 
     # --- form analysis (deterministic) ----------------------------------
@@ -365,6 +379,8 @@ async def run_scan(
         has_policy=policy_url is not None,
         has_imprint=imprint_url is not None,
         consent=consent_block,
+        security=security,
+        lang=req.ui_language,
     )
     p.emit("scoring", f"Final score: {risk.score}/100 ({risk.rating})",
            {"score": risk.score, "rating": risk.rating,
@@ -376,6 +392,7 @@ async def run_scan(
         crawl=pre.crawl, network=pre.network, cookies=pre.cookies,
         privacy_analysis=privacy_analysis, forms=form_report,
         contact_channels=contact_channels, widgets=widgets,
+        security=security,
         consent=consent_block,
     )
 
@@ -386,6 +403,7 @@ async def _run_ai_analysis(
     channels: ContactChannelsReport | None = None,
     imprint_url: str | None = None,
     widgets: ThirdPartyWidgetsReport | None = None,
+    lang: str = "en",
 ) -> PrivacyAnalysis:
     channel_list = channels.channels if channels else []
     widget_list = widgets.widgets if widgets else []
@@ -393,13 +411,13 @@ async def _run_ai_analysis(
         excerpt, _ = truncate_for_model(pre.policy_text, settings.ai_max_policy_chars)
         p.emit("ai_analysis",
                f"Sending policy text to {ai_provider.name} for GDPR review…",
-               {"provider": ai_provider.name})
+               {"provider": ai_provider.name, "lang": lang})
         try:
             analysis = await ai_provider.analyze_policy(
                 policy_text=excerpt, policy_url=policy_url or "",
                 data_flow=pre.network.data_flow, chars_sent=pre.chars_sent,
                 channels=channel_list, imprint_url=imprint_url,
-                widgets=widget_list,
+                widgets=widget_list, lang=lang,  # type: ignore[arg-type]
             )
             p.emit("ai_analysis",
                    f"AI analysis complete — compliance score {analysis.compliance_score}/100",

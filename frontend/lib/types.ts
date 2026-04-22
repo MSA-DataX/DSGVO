@@ -235,6 +235,43 @@ export interface ThirdPartyWidgetsReport {
   summary: Record<string, number>;
 }
 
+// --- Passive security audit (Phase 4) -----------------------------------
+
+export interface SecurityHeaderFinding {
+  name: string;
+  present: boolean;
+  value: string | null;
+  severity: Severity;
+  note: string;
+}
+
+export interface TlsInfo {
+  https_enforced: boolean;
+  tls_version: string | null;
+  cert_expires_days: number | null;
+  cert_issuer: string | null;
+  hsts_max_age_days: number | null;
+  hsts_include_subdomains: boolean;
+  hsts_preload_eligible: boolean;
+}
+
+export interface InfoLeakHeader {
+  name: string;
+  value: string;
+  leaks: string;
+}
+
+export interface SecurityAudit {
+  final_url: string;
+  headers: SecurityHeaderFinding[];
+  tls: TlsInfo | null;
+  mixed_content_count: number;
+  mixed_content_samples: string[];
+  info_leak_headers: InfoLeakHeader[];
+  summary: Record<string, number>;
+  error: string | null;
+}
+
 export interface SubScore {
   name: string;
   score: number;
@@ -313,6 +350,7 @@ export interface ScanResponse {
   forms: FormReport;
   contact_channels: ContactChannelsReport;
   widgets: ThirdPartyWidgetsReport;
+  security?: SecurityAudit | null;
   consent?: ConsentSimulation | null;
   id?: string | null;
   created_at?: string | null;
@@ -324,6 +362,8 @@ export interface ScanRequest {
   max_pages?: number;
   consent_simulation?: boolean;
   privacy_policy_url?: string;
+  /** Language for backend-generated prose (recommendations + AI summary/issues). */
+  ui_language?: "en" | "de";
 }
 
 // --- Streaming + history ---------------------------------------------------

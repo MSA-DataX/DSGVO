@@ -42,6 +42,7 @@ from app.models import (
     PolicyTopicCoverage,
     PrivacyAnalysis,
     ThirdPartyWidget,
+    UiLanguage,
 )
 
 
@@ -52,7 +53,7 @@ log = logging.getLogger("ai_analyzer")
 # Prompts
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT_TEMPLATE = """\
 You are a senior EU data-protection auditor and privacy lawyer. You review
 website privacy policies for GDPR (DSGVO) compliance.
 
@@ -83,11 +84,27 @@ General rules:
   well-written; 0 = no policy or one that ignores GDPR. Use the full
   range; do not cluster around 70. Severe HIGH issues must pull the score
   well below 60.
-- The `summary` field is always English regardless of policy language.
+- The `summary` field and every `issues[].description` MUST be written
+  in {summary_language_name} ({summary_language_code}), regardless of the
+  policy's own language. Only `suggested_text` follows the policy
+  language as described above.
 - Output strict JSON matching the schema in the user message. No prose
   outside the JSON. No markdown fences. No explanatory text before or
   after the JSON object.
 """
+
+
+_LANG_NAME: dict[UiLanguage, str] = {
+    "en": "English",
+    "de": "German",
+}
+
+
+def _system_prompt_for(lang: UiLanguage) -> str:
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        summary_language_name=_LANG_NAME.get(lang, "English"),
+        summary_language_code=lang,
+    )
 
 
 USER_PROMPT_TEMPLATE = """\
@@ -229,6 +246,7 @@ class AIProvider(ABC):
         channels: list[ContactChannel] | None = None,
         imprint_url: str | None = None,
         widgets: list[ThirdPartyWidget] | None = None,
+        lang: UiLanguage = "en",
     ) -> PrivacyAnalysis: ...
 
 
@@ -244,6 +262,7 @@ class NoOpProvider(AIProvider):
         channels: list[ContactChannel] | None = None,
         imprint_url: str | None = None,
         widgets: list[ThirdPartyWidget] | None = None,
+        lang: UiLanguage = "en",
     ) -> PrivacyAnalysis:
         return PrivacyAnalysis(
             provider="none",
@@ -292,9 +311,10 @@ class _OpenAILikeProvider(AIProvider):
         channels: list[ContactChannel] | None = None,
         imprint_url: str | None = None,
         widgets: list[ThirdPartyWidget] | None = None,
+        lang: UiLanguage = "en",
     ) -> PrivacyAnalysis:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt_for(lang)},
             {
                 "role": "user",
                 "content": USER_PROMPT_TEMPLATE.format(

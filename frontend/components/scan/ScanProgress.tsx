@@ -3,17 +3,18 @@
 import { Check, Loader2, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { useLang } from "@/lib/LanguageContext";
 import type { ProgressEvent, ProgressStage } from "@/lib/types";
 
 // Ordered pipeline — drives the checklist UI. Must match scanner.py emits.
-const STAGES: { key: ProgressStage; label: string }[] = [
-  { key: "started",            label: "Started" },
-  { key: "crawling",           label: "Crawling pages" },
-  { key: "cookie_analysis",    label: "Cookies & web storage" },
-  { key: "policy_extraction",  label: "Privacy policy text" },
-  { key: "ai_analysis",        label: "AI policy review" },
-  { key: "form_analysis",      label: "Forms" },
-  { key: "scoring",            label: "Risk scoring" },
+const STAGE_KEYS: { key: ProgressStage; tkey: string }[] = [
+  { key: "started",            tkey: "progress.started" },
+  { key: "crawling",           tkey: "progress.crawling" },
+  { key: "cookie_analysis",    tkey: "progress.cookie" },
+  { key: "policy_extraction",  tkey: "progress.policy" },
+  { key: "ai_analysis",        tkey: "progress.ai" },
+  { key: "form_analysis",      tkey: "progress.forms" },
+  { key: "scoring",            tkey: "progress.scoring" },
 ];
 
 export function ScanProgress({
@@ -23,12 +24,13 @@ export function ScanProgress({
   events: ProgressEvent[];
   errored: boolean;
 }) {
+  const { t } = useLang();
   const latestByStage = new Map<ProgressStage, ProgressEvent>();
   for (const ev of events) latestByStage.set(ev.stage, ev);
 
   const reachedIdx = (() => {
     let i = -1;
-    STAGES.forEach((s, idx) => {
+    STAGE_KEYS.forEach((s, idx) => {
       if (latestByStage.has(s.key)) i = idx;
     });
     return i;
@@ -47,7 +49,7 @@ export function ScanProgress({
           )}
           <div className="flex-1">
             <div className="text-sm font-medium">
-              {errored ? "Scan failed" : latestEvent?.message ?? "Starting…"}
+              {errored ? t("progress.failed") : latestEvent?.message ?? t("progress.starting")}
             </div>
             {!errored && latestEvent?.data && Object.keys(latestEvent.data).length > 0 && (
               <div className="text-xs text-muted-foreground">
@@ -60,7 +62,7 @@ export function ScanProgress({
         </div>
 
         <ul className="space-y-2">
-          {STAGES.map((s, idx) => {
+          {STAGE_KEYS.map((s, idx) => {
             const reached = idx <= reachedIdx;
             const active = idx === reachedIdx && !errored;
             const ev = latestByStage.get(s.key);
@@ -72,7 +74,7 @@ export function ScanProgress({
                     "text-sm",
                     reached ? "font-medium" : "text-muted-foreground"
                   )}>
-                    {s.label}
+                    {t(s.tkey)}
                   </div>
                   {ev && (
                     <div className="text-xs text-muted-foreground">{ev.message}</div>

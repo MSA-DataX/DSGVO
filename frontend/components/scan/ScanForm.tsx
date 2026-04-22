@@ -4,6 +4,7 @@ import * as React from "react";
 import { Search, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useLang } from "@/lib/LanguageContext";
 
 export function ScanForm({
   onSubmit,
@@ -20,6 +21,7 @@ export function ScanForm({
   ) => void;
   loading: boolean;
 }) {
+  const { t } = useLang();
   const [url, setUrl] = React.useState("");
   const [depth, setDepth] = React.useState(1);
   const [pages, setPages] = React.useState(5);
@@ -48,7 +50,7 @@ export function ScanForm({
     <form onSubmit={submit} className="space-y-3">
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
         <div className="flex-1">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Website URL</label>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("form.url")}</label>
           <Input
             value={url}
             onChange={(e) => setUrl(e.target.value)}
@@ -59,7 +61,7 @@ export function ScanForm({
         </div>
         <div className="flex gap-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Depth</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("form.depth")}</label>
             <Input
               type="number" min={0} max={3}
               value={depth}
@@ -68,7 +70,7 @@ export function ScanForm({
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Max pages</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("form.maxPages")}</label>
             <Input
               type="number" min={1} max={25}
               value={pages}
@@ -79,7 +81,7 @@ export function ScanForm({
         </div>
         <Button type="submit" disabled={loading || !url.trim()} size="lg">
           {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-          {loading ? "Scanning…" : "Scan"}
+          {loading ? t("form.scanning") : t("form.scan")}
         </Button>
       </div>
 
@@ -92,8 +94,7 @@ export function ScanForm({
           className="h-4 w-4"
         />
         <span>
-          <strong className="text-foreground">Consent simulation</strong> — run a second crawl that clicks
-          “Accept all” first. Reveals which trackers are gated behind consent. Doubles scan time.
+          <strong className="text-foreground">{t("form.consentSim.title")}</strong> — {t("form.consentSim.desc")}
         </span>
       </label>
 
@@ -107,12 +108,12 @@ export function ScanForm({
           className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
         >
           {advancedOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          Advanced options
+          {t("form.advanced")}
         </button>
         {advancedOpen && (
           <div className="mt-2 rounded-md border p-3">
             <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              Privacy policy URL (optional override)
+              {t("form.privacyUrl.label")}
             </label>
             <Input
               value={privacyUrl}
@@ -120,10 +121,7 @@ export function ScanForm({
               placeholder="https://example.com/datenschutz"
               disabled={loading}
             />
-            <p className="mt-1 text-xs text-muted-foreground">
-              If set, skips automatic detection and uses this URL directly. Useful when the link is
-              buried in a lazy-loaded footer and the crawler misses it. Leave empty for auto-detection.
-            </p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("form.privacyUrl.hint")}</p>
           </div>
         )}
       </div>

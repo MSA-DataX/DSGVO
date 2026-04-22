@@ -1,29 +1,27 @@
+"use client";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { severityColor } from "@/lib/utils";
+import { useLang } from "@/lib/LanguageContext";
 import type { Recommendation } from "@/lib/types";
 
-const PRIORITY_LABEL: Record<Recommendation["priority"], string> = {
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
-
 export function RecommendationsList({ recs }: { recs: Recommendation[] }) {
+  const { t } = useLang();
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Recommendations</CardTitle>
+        <CardTitle>{t("recs.title")}</CardTitle>
       </CardHeader>
       <CardContent>
         {recs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No actions recommended — site looks compliant.</p>
+          <p className="text-sm text-muted-foreground">{t("recs.empty")}</p>
         ) : (
           <ol className="space-y-3">
             {recs.map((r, i) => (
               <li key={i} className="rounded-md border p-3">
                 <div className="flex items-start gap-3">
-                  <Badge className={severityColor(r.priority)}>{PRIORITY_LABEL[r.priority]}</Badge>
+                  <Badge className={severityColor(r.priority)}>{t(`recs.priority.${r.priority}`)}</Badge>
                   <div className="flex-1">
                     <div className="font-medium">{r.title}</div>
                     <p className="mt-1 text-sm text-muted-foreground">{r.detail}</p>
