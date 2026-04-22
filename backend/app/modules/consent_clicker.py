@@ -73,6 +73,57 @@ ACCEPT_TEXTS: list[str] = [
 _ACCEPT_RE = re.compile("|".join(re.escape(t) for t in ACCEPT_TEXTS), re.IGNORECASE)
 
 
+# ---------------------------------------------------------------------------
+# REJECT selectors — mirror of CMP_SELECTORS, same CMP name so the audit
+# module can pair accept + reject from the same banner. Each CMP's reject
+# button is at a different element than its accept button but the same
+# banner instance, so matching by CMP name is reliable.
+# ---------------------------------------------------------------------------
+
+CMP_REJECT_SELECTORS: list[tuple[str, str]] = [
+    ("OneTrust",          "#onetrust-reject-all-handler, button[aria-label*='Reject' i]"),
+    ("Cookiebot",         "#CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll"),
+    ("Cookiebot (legacy)","#CybotCookiebotDialogBodyButtonDecline"),
+    ("Usercentrics",      "[data-testid='uc-deny-all-button']"),
+    ("Usercentrics v2",   "button[mode='primary'][aria-label*='Deny' i]"),
+    ("Borlabs Cookie",    "a.brlbs-btn-refuse-all, ._brlbs-btn-refuse-all"),
+    ("Klaro",             ".cm-btn-decline, .cm-btn-reject-all"),
+    ("CookieScript",      "#cookiescript_reject"),
+    ("CookieYes",         "#cky-btn-reject, .cky-btn-reject"),
+    ("Iubenda",           ".iubenda-cs-reject-btn"),
+    ("Quantcast",         ".qc-cmp2-summary-buttons[mode='secondary']"),
+    ("Didomi",            "#didomi-notice-disagree-button"),
+    ("Sourcepoint",       ".sp_choice_type_REJECT_ALL, button[title*='Reject' i]"),
+    ("Complianz",         ".cmplz-btn.cmplz-deny, button.cmplz-deny"),
+    ("Osano",             ".osano-cm-denyall, button.osano-cm-denyall"),
+    ("WP Cookie Notice",  "#cn-refuse-cookie"),
+    ("Tarteaucitron",     "#tarteaucitronAllDenied2, button#tarteaucitronDeny2"),
+    ("HubSpot",           "#hs-eu-decline-button"),
+    ("TrustArc",          "#truste-consent-required"),
+    ("Mediavine",         "button[data-testid='mediavine-gdpr-cmp-decline']"),
+]
+
+REJECT_TEXTS: list[str] = [
+    # English
+    "reject all", "reject all cookies", "deny all", "decline all", "decline",
+    "do not accept", "i disagree", "refuse", "only essential", "only necessary",
+    # German — "nur notwendige" counts; it's the common de-facto reject option.
+    "alle ablehnen", "alles ablehnen", "ablehnen", "ich lehne ab",
+    "nur notwendige", "nur notwendige cookies", "nur essenzielle",
+    "ohne einwilligung fortfahren", "nicht einverstanden",
+    # French
+    "tout refuser", "refuser tout", "je refuse", "refuser",
+    "uniquement nécessaires",
+    # Italian
+    "rifiuta tutti", "rifiuta tutto", "rifiuto", "solo necessari",
+    # Spanish
+    "rechazar todo", "rechazar todas", "rechazar", "solo necesarias",
+    # Dutch
+    "alles weigeren", "weigeren", "alleen noodzakelijk",
+]
+_REJECT_RE = re.compile("|".join(re.escape(t) for t in REJECT_TEXTS), re.IGNORECASE)
+
+
 async def try_click_consent(
     page: Page,
     settle_ms: int = 800,

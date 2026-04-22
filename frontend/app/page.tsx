@@ -15,6 +15,8 @@ import { RecommendationsList } from "@/components/scan/RecommendationsList";
 import { DataFlowTable } from "@/components/scan/DataFlowTable";
 import { CookiesSection } from "@/components/scan/CookiesSection";
 import { FirstPartyScriptsSection } from "@/components/scan/FirstPartyScriptsSection";
+import { ContactChannelsSection } from "@/components/scan/ContactChannelsSection";
+import { ThirdPartyWidgetsSection } from "@/components/scan/ThirdPartyWidgetsSection";
 import { PrivacyAnalysisCard } from "@/components/scan/PrivacyAnalysisCard";
 import { FormsSection } from "@/components/scan/FormsSection";
 import { getScan, streamScan } from "@/lib/api";
@@ -156,6 +158,10 @@ function Results({ result }: { result: ScanResponse }) {
         <DataFlowTable flow={result.network.data_flow} />
         <CookiesSection report={result.cookies} />
       </div>
+
+      <ContactChannelsSection report={result.contact_channels} />
+
+      <ThirdPartyWidgetsSection report={result.widgets} />
 
       <FirstPartyScriptsSection network={result.network} />
 

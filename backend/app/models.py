@@ -10,6 +10,42 @@ CookieCategory = Literal["necessary", "functional", "analytics", "marketing", "u
 StorageKind = Literal["local", "session"]
 Severity = Literal["low", "medium", "high"]
 FormPurpose = Literal["collection", "search", "authentication", "unknown"]
+ContactChannelKind = Literal[
+    # messaging
+    "whatsapp", "telegram", "signal", "facebook_messenger", "skype", "discord",
+    # direct schemes
+    "email", "phone", "sms",
+    # social profiles
+    "facebook_profile", "instagram_profile", "linkedin_profile",
+    "twitter_profile", "youtube_channel", "tiktok_profile",
+    "xing_profile", "pinterest_profile", "github_profile",
+]
+WidgetCategory = Literal["video", "map", "chat", "auth", "social_embed", "other"]
+DarkPatternCode = Literal[
+    "no_direct_reject",         # only Accept + Settings, no reject on first level
+    "reject_via_text_fallback", # only matched via loose text heuristic — low confidence
+    "reject_much_smaller",      # reject area significantly smaller than accept
+    "reject_below_fold",        # reject button not in the initial viewport
+    "reject_low_prominence",    # weaker font-weight / no background / lower opacity
+    "forced_interaction",       # banner blocks content and offers no opt-out
+]
+WidgetKind = Literal[
+    # video
+    "youtube", "youtube_nocookie", "vimeo", "vimeo_dnt", "wistia",
+    # maps
+    "google_maps", "openstreetmap", "mapbox", "bing_maps", "apple_maps",
+    # chat widgets
+    "chat_intercom", "chat_drift", "chat_zendesk", "chat_tawk",
+    "chat_crisp", "chat_livechat", "chat_hubspot", "chat_facebook",
+    # auth / social login SDKs
+    "auth_google", "auth_facebook", "auth_apple", "auth_microsoft",
+    "auth_linkedin", "auth_twitter", "auth_github",
+    # social embeds (feeds, like buttons, share widgets)
+    "twitter_widget", "facebook_widget", "instagram_embed",
+    "linkedin_widget", "tiktok_embed", "pinterest_widget",
+    # catch-all for future additions
+    "other",
+]
 RiskRating = Literal["low", "medium", "high", "critical"]
 RecommendationPriority = Literal["low", "medium", "high"]
 PolicyIssueCategory = Literal[
@@ -69,6 +105,7 @@ class PageInfo(BaseModel):
     status: int | None
     depth: int
     scripts: list[str] = []
+    iframes: list[str] = []              # absolute iframe srcs declared in HTML
     links: list[str] = []
     forms: list[FormInfo] = []
     storage: list[StorageItem] = []
@@ -98,6 +135,9 @@ class CrawlResult(BaseModel):
     start_url: str
     pages: list[PageInfo]
     privacy_policy_url: str | None
+    imprint_url: str | None = None     # § 5 TMG Impressum — mandatory for
+                                       # German commercial sites. None = not
+                                       # found via crawl or common-path probing.
 
 
 class NetworkResult(BaseModel):
@@ -203,6 +243,42 @@ class FormReport(BaseModel):
     summary: dict[str, int]           # totals: forms / with_consent / with_privacy_link / collecting_pii
 
 
+class ContactChannel(BaseModel):
+    kind: ContactChannelKind
+    target: str                        # URL (for web links) or masked address (mailto:/tel:/sms:)
+    vendor: str | None                 # "Meta", "Microsoft", … or None for generic schemes
+    country: Region                    # transfer destination, "Unknown" for mailto:/tel:
+    pages: list[str]                   # which crawled page(s) expose this channel
+
+
+class ContactChannelsReport(BaseModel):
+    channels: list[ContactChannel]
+    summary: dict[str, int]
+
+
+class ThirdPartyWidget(BaseModel):
+    """A third-party UI element embedded in the site.
+
+    Covers iframes (video, maps), chat widgets (Intercom etc.), and
+    social-login SDK scripts. Each entry represents a distinct embed —
+    the same YouTube video linked from 5 pages is one widget with five
+    pages, not five widgets.
+    """
+    kind: WidgetKind
+    category: WidgetCategory
+    vendor: str | None
+    country: Region
+    src: str                               # iframe URL, script URL, or handler pattern
+    pages: list[str]                       # crawled pages where it appears
+    privacy_enhanced: bool = False         # True for youtube-nocookie.com, Vimeo ?dnt=1, etc.
+    requires_consent: bool = True          # False if strictly necessary (e.g. auth on login page only)
+
+
+class ThirdPartyWidgetsReport(BaseModel):
+    widgets: list[ThirdPartyWidget]
+    summary: dict[str, int]
+
+
 class SubScore(BaseModel):
     name: str                          # cookies | tracking | data_transfer | privacy | forms
     score: int = Field(ge=0, le=100)   # higher = better
@@ -243,6 +319,32 @@ class ConsentDiff(BaseModel):
     new_analytics_count: int = 0
 
 
+class DarkPatternFinding(BaseModel):
+    code: DarkPatternCode
+    severity: Severity
+    description: str
+    # Numeric / boolean evidence behind the finding so the auditor can
+    # re-verify ("reject was 42% the area of accept" instead of a vague
+    # "smaller"). Kept flat + JSON-serializable.
+    evidence: dict[str, float | int | str | bool] = {}
+
+
+class ConsentUxAudit(BaseModel):
+    """Objective measurement of how the consent banner presents Accept vs.
+    Reject. Populated only when consent simulation is enabled AND a banner
+    was actually detected."""
+    banner_detected: bool
+    cmp: str | None = None                         # same label as ConsentSimulation.cmp_detected
+    accept_found: bool
+    reject_found: bool
+    reject_via_text_fallback: bool = False         # matched only via loose text heuristic
+    findings: list[DarkPatternFinding] = []
+    # Raw measurements for the dashboard — allows the UI to render a
+    # side-by-side comparison without re-measuring.
+    accept_metrics: dict[str, float | bool | str] | None = None
+    reject_metrics: dict[str, float | bool | str] | None = None
+
+
 class ConsentSimulation(BaseModel):
     """Result of the optional second crawl that clicks the cookie banner."""
     enabled: bool                                  # was simulation requested at all
@@ -252,6 +354,7 @@ class ConsentSimulation(BaseModel):
     pre_summary: dict[str, int] = {}               # cookie/tracker counts before consent
     post_summary: dict[str, int] = {}              # … after consent
     diff: ConsentDiff | None = None
+    ux_audit: ConsentUxAudit | None = None         # dark-pattern audit of the banner itself
 
 
 class ScanResponse(BaseModel):
@@ -262,6 +365,8 @@ class ScanResponse(BaseModel):
     cookies: CookieReport
     privacy_analysis: PrivacyAnalysis
     forms: FormReport
+    contact_channels: ContactChannelsReport
+    widgets: ThirdPartyWidgetsReport
     consent: ConsentSimulation | None = None
     # Populated by storage.save_scan(). Not set during scan execution.
     id: str | None = None

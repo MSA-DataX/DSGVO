@@ -36,6 +36,17 @@ PRIVACY_HINTS = (
     "confidentialité",
 )
 
+# § 5 TMG — German commercial sites must have an imprint. English "imprint"
+# is the standard international equivalent.
+IMPRINT_HINTS = (
+    "impressum",
+    "imprint",
+    "mentions-legales",
+    "mentions_legales",
+    "legal-notice",
+    "legalnotice",
+)
+
 
 def _registered_domain(url: str) -> str:
     ext = tldextract.extract(url)
@@ -49,6 +60,13 @@ def _looks_like_privacy_policy(url: str, anchor_text: str | None = None) -> bool
     if anchor_text:
         haystacks.append(anchor_text.lower())
     return any(h in s for s in haystacks for h in PRIVACY_HINTS)
+
+
+def _looks_like_imprint(url: str, anchor_text: str | None = None) -> bool:
+    haystacks: list[str] = [url.lower()]
+    if anchor_text:
+        haystacks.append(anchor_text.lower())
+    return any(h in s for s in haystacks for h in IMPRINT_HINTS)
 
 
 def _normalize(url: str) -> str:
@@ -131,7 +149,28 @@ class Crawler:
                 if privacy_url:
                     break
 
-        return CrawlResult(start_url=start_url, pages=pages, privacy_policy_url=privacy_url)
+        # Imprint detection — URL only, we don't need to fetch its content
+        # (yet). First check visited pages, then scan outgoing links.
+        imprint_url: str | None = None
+        for p in pages:
+            if _looks_like_imprint(p.url):
+                imprint_url = p.url
+                break
+        if imprint_url is None:
+            for p in pages:
+                for link, _ in self._iter_internal_links(p, target_domain):
+                    if _looks_like_imprint(link):
+                        imprint_url = link
+                        break
+                if imprint_url:
+                    break
+
+        return CrawlResult(
+            start_url=start_url,
+            pages=pages,
+            privacy_policy_url=privacy_url,
+            imprint_url=imprint_url,
+        )
 
     async def _visit(
         self, page: Page, url: str, depth: int, anchor_text: str | None
@@ -166,6 +205,16 @@ class Crawler:
             for s in soup.find_all("script")
             if s.get("src")
         ]
+        # Also grab <iframe src="..."> — Phase 2 widget detection keys off
+        # these to distinguish e.g. youtube.com/embed (tracks) from
+        # youtube-nocookie.com/embed (doesn't). Iframes can also be declared
+        # on data-src for lazy loading; grab that too.
+        iframes = [
+            urljoin(page.url, src)
+            for tag in soup.find_all("iframe")
+            for src in [tag.get("src") or tag.get("data-src")]
+            if src
+        ]
         links = [urljoin(page.url, a.get("href")) for a in soup.find_all("a", href=True)]
         forms = self._extract_forms(soup, page.url)
 
@@ -180,6 +229,7 @@ class Crawler:
             status=status,
             depth=depth,
             scripts=scripts,
+            iframes=iframes,
             links=links,
             forms=forms,
             storage=storage,

@@ -1,9 +1,18 @@
-import { CheckCircle2, AlertTriangle, MousePointerClick, Info } from "lucide-react";
+import { CheckCircle2, AlertTriangle, MousePointerClick, Info, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { categoryColor, countryColor, severityColor } from "@/lib/utils";
-import type { ConsentSimulation } from "@/lib/types";
+import type { ConsentSimulation, ConsentUxAudit, DarkPatternCode } from "@/lib/types";
+
+const DARK_PATTERN_LABEL: Record<DarkPatternCode, string> = {
+  no_direct_reject:         "No first-level Reject button",
+  reject_via_text_fallback: "Reject matched via loose text heuristic",
+  reject_much_smaller:      "Reject button significantly smaller than Accept",
+  reject_below_fold:        "Reject button below the viewport",
+  reject_low_prominence:    "Reject styled less prominently",
+  forced_interaction:       "Banner blocks content without opt-out",
+};
 
 export function ConsentSection({ consent }: { consent: ConsentSimulation }) {
   const diff = consent.diff;
@@ -32,6 +41,8 @@ export function ConsentSection({ consent }: { consent: ConsentSimulation }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {consent.ux_audit && <UxAuditBlock audit={consent.ux_audit} />}
+
         {!consent.accept_clicked && (
           <Alert>
             <Info className="h-4 w-4" />
@@ -173,6 +184,88 @@ function Stat({ label, value }: { label: string; value: number }) {
     <div className="rounded-md border p-3">
       <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-2xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+// -- Consent UX / Dark-pattern audit (Phase 3) ----------------------------
+
+function UxAuditBlock({ audit }: { audit: ConsentUxAudit }) {
+  if (!audit.banner_detected) {
+    return null; // No findings to show when there was no banner to measure
+  }
+
+  const findings = audit.findings;
+  if (findings.length === 0) {
+    return (
+      <Alert>
+        <ShieldCheck className="h-4 w-4 text-risk-low" />
+        <AlertTitle>Consent banner UX looks clean</AlertTitle>
+        <AlertDescription>
+          Accept and Reject buttons are present at the same level, comparable in size and
+          prominence. No dark patterns detected.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-risk-high/40 bg-risk-high/5">
+      <div className="flex items-center gap-2 border-b border-risk-high/30 p-3">
+        <ShieldAlert className="h-4 w-4 text-risk-high" />
+        <div className="text-sm font-medium text-risk-high">
+          Consent banner dark patterns ({findings.length})
+        </div>
+      </div>
+      <ul className="divide-y">
+        {findings.map((f, i) => (
+          <li key={i} className="space-y-1 p-3">
+            <div className="flex items-center gap-2">
+              <Badge className={`text-[10px] ${severityColor(f.severity)}`}>
+                {f.severity}
+              </Badge>
+              <span className="text-sm font-medium">
+                {DARK_PATTERN_LABEL[f.code] ?? f.code}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">{f.description}</p>
+            {Object.keys(f.evidence).length > 0 && (
+              <div className="flex flex-wrap gap-1 pt-1">
+                {Object.entries(f.evidence).map(([k, v]) => (
+                  <code
+                    key={k}
+                    className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono"
+                  >
+                    {k}: {String(v)}
+                  </code>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      {audit.accept_metrics && audit.reject_metrics && (
+        <div className="grid grid-cols-2 gap-3 border-t border-risk-high/30 p-3 text-[11px] text-muted-foreground">
+          <div>
+            <div className="font-medium text-foreground">Accept button</div>
+            <div>
+              {Math.round(Number(audit.accept_metrics["width"]) || 0)}×
+              {Math.round(Number(audit.accept_metrics["height"]) || 0)} px ·{" "}
+              weight {Number(audit.accept_metrics["fontWeight"]) || 400} ·{" "}
+              {audit.accept_metrics["hasOwnBackground"] ? "filled" : "plain"}
+            </div>
+          </div>
+          <div>
+            <div className="font-medium text-foreground">Reject button</div>
+            <div>
+              {Math.round(Number(audit.reject_metrics["width"]) || 0)}×
+              {Math.round(Number(audit.reject_metrics["height"]) || 0)} px ·{" "}
+              weight {Number(audit.reject_metrics["fontWeight"]) || 400} ·{" "}
+              {audit.reject_metrics["hasOwnBackground"] ? "filled" : "plain"}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

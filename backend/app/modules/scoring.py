@@ -24,7 +24,11 @@ score uses the same scale and is bucketed into a 4-tier risk rating.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from app.models import (
+    ConsentSimulation,
+    ContactChannelsReport,
     CookieReport,
     FormReport,
     HardCap,
@@ -34,6 +38,7 @@ from app.models import (
     RiskRating,
     RiskScore,
     SubScore,
+    ThirdPartyWidgetsReport,
 )
 from app.modules.form_analyzer import PII_CATEGORIES
 
@@ -229,6 +234,21 @@ def _score_forms(forms: FormReport) -> SubScore:
 # Hard caps
 # ---------------------------------------------------------------------------
 
+def _has_external_google_fonts(network: NetworkResult) -> bool:
+    """Detect requests to Google's font servers.
+
+    ``fonts.googleapis.com`` (CSS loader) and ``fonts.gstatic.com`` (the
+    actual font binaries) are the exact hostnames flagged by LG München I
+    in its 2022 ruling — loading either from Google is a confirmed GDPR
+    violation under that case law, cap required.
+    """
+    for r in network.requests:
+        host = (urlparse(r.url).hostname or "").lower()
+        if host in ("fonts.googleapis.com", "fonts.gstatic.com"):
+            return True
+    return False
+
+
 def _has_consent_cmp(cookies: CookieReport) -> bool:
     """True if a known consent-management-platform cookie is present."""
     cmp_vendors = {"onetrust", "cookiebot", "borlabs", "usercentrics", "orestbida"}
@@ -245,6 +265,10 @@ def _compute_caps(
     network: NetworkResult,
     privacy: PrivacyAnalysis,
     has_policy: bool,
+    has_imprint: bool,
+    channels: ContactChannelsReport,
+    widgets: ThirdPartyWidgetsReport,
+    consent: ConsentSimulation | None,
 ) -> list[HardCap]:
     caps: list[HardCap] = []
     has_cmp = _has_consent_cmp(cookies)
@@ -330,6 +354,97 @@ def _compute_caps(
             description="Privacy policy does not state any Art. 6 GDPR legal basis for processing.",
             cap_value=55,
         ))
+
+    # § 5 TMG / Telemediengesetz — German commercial sites must have an
+    # Impressum. If we couldn't find one via crawl OR common-path probe,
+    # that's a concrete Abmahnrisiko.
+    if not has_imprint:
+        caps.append(HardCap(
+            code="no_imprint",
+            description="No Impressum page could be located. § 5 TMG requires German commercial sites to publish an imprint with operator identity, contact, and register information.",
+            cap_value=50,
+        ))
+
+    # Google Fonts loaded externally from google.com servers is a confirmed
+    # GDPR violation under LG München I 2022. The ruling specifically
+    # condemned the unnecessary transmission of user IP addresses to Google
+    # — easy to fix (self-host fonts) and hard to defend.
+    if _has_external_google_fonts(network):
+        caps.append(HardCap(
+            code="google_fonts_external",
+            description="Site loads Google Fonts from Google's servers (fonts.googleapis.com / fonts.gstatic.com). Under LG München I ruling (2022) this is a GDPR violation — self-host the fonts instead.",
+            cap_value=65,
+        ))
+
+    # Third-party widgets (YouTube in tracking mode, Google Maps, chat
+    # widgets, social-login SDKs) loaded pre-consent. The privacy-enhanced
+    # variants (youtube-nocookie, Vimeo ?dnt=1, OpenStreetMap) don't
+    # trigger; they're the recommended fix.
+    if not has_cmp:
+        tracking_video = [
+            w for w in widgets.widgets
+            if w.category == "video" and not w.privacy_enhanced
+        ]
+        chat_widgets = [w for w in widgets.widgets if w.category == "chat"]
+        tracking_maps = [
+            w for w in widgets.widgets
+            if w.category == "map" and not w.privacy_enhanced
+        ]
+        if tracking_video or chat_widgets:
+            caps.append(HardCap(
+                code="embed_or_chat_without_consent",
+                description="Site embeds tracking-variant video players (YouTube instead of youtube-nocookie) or chat widgets (Intercom, Drift, Zendesk, …) that fire network requests before the user consents.",
+                cap_value=55,
+            ))
+        elif tracking_maps:
+            caps.append(HardCap(
+                code="map_embed_without_consent",
+                description="Site embeds Google Maps / Mapbox / Bing Maps before consent. Use a click-to-activate overlay or switch to OpenStreetMap export embed.",
+                cap_value=70,
+            ))
+
+    # Contact channels to US platforms (WhatsApp / Messenger / Meta /
+    # TikTok etc.) WITHOUT mention in the privacy policy — the AI analyzer
+    # handles the policy-cross-check separately, but having the channel at
+    # all without a stated legal basis is a hard signal. We only apply the
+    # cap when the policy is present and the AI explicitly says
+    # third-country transfers are NOT disclosed.
+    high_risk_channels = [c for c in channels.channels if c.country in ("USA", "Other")]
+    if (
+        high_risk_channels
+        and privacy.coverage
+        and not privacy.coverage.third_country_transfers_disclosed
+    ):
+        caps.append(HardCap(
+            code="contact_channel_transfer_not_disclosed",
+            description=f"Site exposes {len(high_risk_channels)} contact channel(s) that transfer data outside the EU/EEA (e.g. WhatsApp, Meta, TikTok) but the policy does not disclose this.",
+            cap_value=60,
+        ))
+
+    # Consent-banner dark patterns — cap depends on the worst finding.
+    # Rationale: the EDPB position is that a banner with a dark pattern
+    # does not produce valid consent, so *everything* the site loads after
+    # that banner is effectively without legal basis. We only cap when a
+    # HIGH finding is present so we don't double-penalise subtle issues
+    # that already show up as MEDIUM notes.
+    if consent and consent.ux_audit:
+        has_high = any(f.severity == "high" for f in consent.ux_audit.findings)
+        has_medium = any(f.severity == "medium" for f in consent.ux_audit.findings)
+        if has_high:
+            # Typical trigger: "no_direct_reject" — banner has Accept +
+            # Settings only. Invalid consent → cap hard.
+            caps.append(HardCap(
+                code="consent_dark_pattern_high",
+                description="Consent banner contains a HIGH-severity dark pattern (e.g. no first-level 'Reject all' button). Under EDPB Guidelines 03/2022 this invalidates the obtained consent — the site effectively has no legal basis for the tracking it runs.",
+                cap_value=45,
+            ))
+        elif has_medium:
+            caps.append(HardCap(
+                code="consent_dark_pattern_medium",
+                description="Consent banner shows asymmetric treatment of Accept vs Reject (size, position, or visual prominence). Steers users toward consent and weakens the 'freely given' requirement.",
+                cap_value=65,
+            ))
+
     return caps
 
 
@@ -342,6 +457,9 @@ def _build_recommendations(
     network: NetworkResult,
     privacy: PrivacyAnalysis,
     forms: FormReport,
+    channels: ContactChannelsReport,
+    widgets: ThirdPartyWidgetsReport,
+    consent: ConsentSimulation | None,
     caps: list[HardCap],
 ) -> list[Recommendation]:
     recs: list[Recommendation] = []
@@ -407,6 +525,192 @@ def _build_recommendations(
             detail="The policy must name the legal basis (consent, contract, legitimate interest, etc.) "
                    "for every category of processing. List them per processing purpose.",
             related=["no_legal_basis_stated"],
+        ))
+
+    # --- Third-party widgets (Phase 2) ---------------------------------
+    # Tracking-variant video embeds — actionable fix: swap the host.
+    tracking_video_widgets = [
+        w for w in widgets.widgets
+        if w.category == "video" and not w.privacy_enhanced
+    ]
+    if tracking_video_widgets:
+        sample = ", ".join(sorted({w.vendor or w.kind for w in tracking_video_widgets}))
+        recs.append(Recommendation(
+            priority="high",
+            title="Switch video embeds to the privacy-enhanced variant",
+            detail=f"Detected tracking-variant video embeds ({sample}). Quick wins: "
+                   f"replace `youtube.com/embed/VIDEO_ID` with `youtube-nocookie.com/embed/VIDEO_ID` "
+                   f"(zero functional difference, no cookies until play); append `?dnt=1` to "
+                   f"`player.vimeo.com/video/...` URLs. Alternatively wrap each video in a "
+                   f"click-to-activate overlay so the iframe only loads after the user clicks Play.",
+            related=[w.src for w in tracking_video_widgets[:5]],
+        ))
+
+    tracking_map_widgets = [
+        w for w in widgets.widgets
+        if w.category == "map" and not w.privacy_enhanced
+    ]
+    if tracking_map_widgets:
+        recs.append(Recommendation(
+            priority="medium",
+            title="Replace map embeds with a privacy-friendly alternative",
+            detail="Google Maps / Mapbox / Bing Maps iframes load trackers and transmit the "
+                   "visitor's IP to the provider before any interaction. Options: "
+                   "(1) OpenStreetMap via the export-embed URL (fully EU, no tracking), "
+                   "(2) click-to-activate overlay on the existing map, "
+                   "(3) a static map image generated server-side.",
+            related=[w.vendor or w.kind for w in tracking_map_widgets[:5]],
+        ))
+
+    chat_widgets = [w for w in widgets.widgets if w.category == "chat"]
+    if chat_widgets:
+        names = ", ".join(sorted({w.vendor or w.kind for w in chat_widgets}))
+        recs.append(Recommendation(
+            priority="high",
+            title="Gate chat widgets behind consent",
+            detail=f"Chat widget(s) detected: {names}. These scripts load session cookies and "
+                   f"transmit visitor metadata as soon as the page opens — well before the user "
+                   f"decides to chat. Load the widget script only after the user actively opts in "
+                   f"(CMP consent or a user-triggered 'Chat with us' button), and name the "
+                   f"provider + US transfer in the privacy policy.",
+            related=[w.vendor or w.kind for w in chat_widgets],
+        ))
+
+    auth_widgets = [w for w in widgets.widgets if w.category == "auth"]
+    if auth_widgets:
+        names = ", ".join(sorted({w.vendor or w.kind for w in auth_widgets}))
+        recs.append(Recommendation(
+            priority="medium",
+            title="Load social-login SDKs only on pages that need them",
+            detail=f"Social-login SDK(s) detected: {names}. Many sites include these on every "
+                   f"page even though the button exists only on /login or /register. Load the "
+                   f"SDK lazily (e.g. after a user clicks 'Sign in with …') so non-authenticating "
+                   f"visitors don't trigger third-party script execution and the associated "
+                   f"cookie/fingerprint leakage.",
+            related=[w.vendor or w.kind for w in auth_widgets],
+        ))
+
+    # --- Consent-banner dark patterns ----------------------------------
+    if consent and consent.ux_audit and consent.ux_audit.findings:
+        # Give one grouped recommendation per finding code so the detail
+        # text can be specific (the generic cap description is too abstract
+        # for the fix).
+        code_details: dict[str, tuple[str, str, str]] = {
+            "no_direct_reject": (
+                "high",
+                "Add a first-level 'Reject all' button to the consent banner",
+                "The banner only offers 'Accept' + 'Settings'. Under EDPB Guidelines "
+                "03/2022 (§ 3.2) and the German DSK, refusing must be as easy as "
+                "consenting — one click, same level, same visual weight. Put a "
+                "'Reject all' button next to 'Accept all'. This alone is the most "
+                "common Datenschutzbehörde finding in Germany (cf. DSK decision "
+                "Tracking 2023).",
+            ),
+            "reject_much_smaller": (
+                "high",
+                "Make Reject and Accept buttons the same size",
+                "Reject is visually smaller than Accept. Auditable fix: give both "
+                "buttons identical width, height, padding, and font size. If you "
+                "want visual hierarchy, keep it symmetric (both plain, or both "
+                "filled in your brand color).",
+            ),
+            "reject_below_fold": (
+                "medium",
+                "Position Reject in the same viewport region as Accept",
+                "Reject is below the initial viewport; the user must scroll to find "
+                "it. Auditable fix: both buttons visible without scrolling on 1366×768, "
+                "ideally side-by-side or one above the other within the banner.",
+            ),
+            "reject_low_prominence": (
+                "medium",
+                "Style Reject with the same prominence as Accept",
+                "Reject has weaker font weight, no background, or lower opacity than "
+                "Accept. Auditable fix: both buttons share the same CSS class for "
+                "background, color, weight, and border. Visual hierarchy implies "
+                "preferred action; that's exactly what EDPB forbids for consent.",
+            ),
+            "reject_via_text_fallback": (
+                "low",
+                "Verify banner layout manually",
+                "Our automated detection matched Reject only via multilingual text "
+                "heuristics — measurements below may be imprecise. Manually verify "
+                "that Reject is a visible first-level button.",
+            ),
+            "forced_interaction": (
+                "high",
+                "Don't block content without offering a direct opt-out",
+                "The banner blocks the page with no refusal option. Users cannot "
+                "consent freely under Art. 4(11) GDPR when the only path forward is "
+                "to accept.",
+            ),
+        }
+        seen_codes: set[str] = set()
+        for f in consent.ux_audit.findings:
+            if f.code in seen_codes:
+                continue
+            seen_codes.add(f.code)
+            meta = code_details.get(f.code)
+            if meta is None:
+                continue
+            priority, title, detail = meta
+            recs.append(Recommendation(
+                priority=priority,  # type: ignore[arg-type]
+                title=title,
+                detail=detail,
+                related=[f"consent:{f.code}"],
+            ))
+
+    # --- Google Fonts (LG München I 2022) ------------------------------
+    if "google_fonts_external" in cap_codes:
+        recs.append(Recommendation(
+            priority="high",
+            title="Self-host your fonts instead of loading from Google",
+            detail="Google Fonts requests transmit the visitor's IP to Google (USA) without consent. "
+                   "LG München I (Az. 3 O 17493/20, 20.01.2022) ruled this a GDPR violation and "
+                   "awarded damages against the operator. Fix: download the font files once, serve "
+                   "them from your own origin (e.g. via @font-face with local .woff2 files), drop "
+                   "the <link> to fonts.googleapis.com. Tools like google-webfonts-helper automate "
+                   "this in under a minute.",
+            related=["google_fonts_external"],
+        ))
+
+    # --- § 5 TMG Impressum --------------------------------------------
+    if "no_imprint" in cap_codes:
+        recs.append(Recommendation(
+            priority="high",
+            title="Publish an Impressum (§ 5 TMG)",
+            detail="No imprint page could be located. Commercial German websites must publish an "
+                   "Impressum with at least: operator name and legal form, postal address, contact "
+                   "(email + phone or fax), register (Handelsregister) info where applicable, VAT "
+                   "ID (USt-IdNr.), and, for journalistic content, a responsible person (V.i.S.d.P.). "
+                   "Missing or hidden imprint is the single most common Abmahngrund (cease-and-"
+                   "desist trigger) in Germany. Link from the footer at a stable URL such as "
+                   "/impressum.",
+            related=["no_imprint"],
+        ))
+
+    # --- Contact channels -------------------------------------------------
+    # Always worth surfacing a recommendation when we found any US / non-EU
+    # channel, regardless of whether the cap triggered — the cap only fires
+    # if the policy is *silent*, but the recommendation is still useful as
+    # a checklist item for the operator.
+    us_channels = [c for c in channels.channels if c.country in ("USA", "Other")]
+    if us_channels:
+        by_kind: dict[str, int] = {}
+        for c in us_channels:
+            by_kind[c.kind] = by_kind.get(c.kind, 0) + 1
+        kinds_str = ", ".join(f"{n}× {k.replace('_', ' ')}" for k, n in sorted(by_kind.items()))
+        priority = "high" if "contact_channel_transfer_not_disclosed" in cap_codes else "medium"
+        recs.append(Recommendation(
+            priority=priority,
+            title="Document each non-EU contact channel in the privacy policy",
+            detail=f"The site exposes contact channels that transfer user data outside the EU/EEA "
+                   f"({kinds_str}). For each one the policy must name the provider (e.g. 'Meta "
+                   f"Platforms Inc., WhatsApp'), state the legal basis (typically Art. 6(1)(a) "
+                   f"consent because the user initiates contact, or Art. 6(1)(f) legitimate "
+                   f"interest for publicly-facing profile links), and disclose the third-country "
+                   f"transfer with its safeguard (SCCs / EU-US Data Privacy Framework).",
+            related=sorted({c.kind for c in us_channels}),
         ))
 
     # --- per-domain transfer recommendations ----------------------------
@@ -518,7 +822,11 @@ def compute_risk(
     network: NetworkResult,
     privacy: PrivacyAnalysis,
     forms: FormReport,
+    channels: ContactChannelsReport,
+    widgets: ThirdPartyWidgetsReport,
     has_policy: bool,
+    has_imprint: bool,
+    consent: ConsentSimulation | None = None,
 ) -> RiskScore:
     sub_scores = [
         _score_cookies(cookies),
@@ -530,13 +838,19 @@ def compute_risk(
     weighted = round(sum(s.weighted_contribution for s in sub_scores))
     weighted = _clamp(weighted)
 
-    caps = _compute_caps(cookies, network, privacy, has_policy)
+    caps = _compute_caps(
+        cookies=cookies, network=network, privacy=privacy,
+        has_policy=has_policy, has_imprint=has_imprint,
+        channels=channels, widgets=widgets, consent=consent,
+    )
     final = weighted
     for cap in caps:
         if final > cap.cap_value:
             final = cap.cap_value
 
-    recommendations = _build_recommendations(cookies, network, privacy, forms, caps)
+    recommendations = _build_recommendations(
+        cookies, network, privacy, forms, channels, widgets, consent, caps,
+    )
 
     return RiskScore(
         score=final,

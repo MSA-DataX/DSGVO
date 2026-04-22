@@ -36,10 +36,12 @@ from tenacity import (
 
 from app.config import settings
 from app.models import (
+    ContactChannel,
     DataFlowEntry,
     PolicyIssue,
     PolicyTopicCoverage,
     PrivacyAnalysis,
+    ThirdPartyWidget,
 )
 
 
@@ -93,6 +95,7 @@ Review this website's privacy policy against GDPR (Articles 12-14 in
 particular) AND against the observed live-site behavior.
 
 POLICY URL: {policy_url}
+IMPRINT URL: {imprint_url}
 
 EVIDENCE FROM THE LIVE SITE — third-party domains the site actually
 contacts. USE THIS AS A CROSS-CHECK: every domain below that is not
@@ -101,6 +104,31 @@ policy does not pair with SCC / EU-US Data Privacy Framework / adequacy
 language is a `third_country_transfer` HIGH issue.
 
 {data_flow_summary}
+
+CONTACT CHANNELS EXPOSED ON THE SITE — communication links and buttons
+visitors can click (WhatsApp / Messenger / mailto: / tel: / social
+profiles …). Each of these triggers data processing: the user's phone
+number or email reaches the operator, and for vendor channels
+(WhatsApp/Meta/TikTok) the chat metadata reaches a US or other non-EU
+platform. CROSS-CHECK AGAINST THE POLICY: every non-EU channel below
+without matching legal-basis + third-country-transfer language is an
+issue. WhatsApp / Meta / TikTok entries without SCC or EU-US DPF
+language are `third_country_transfer` HIGH issues.
+
+{contact_channels_summary}
+
+THIRD-PARTY WIDGETS EMBEDDED ON THE SITE — iframes (video players, maps,
+social embeds), chat widgets (Intercom / Drift / Zendesk etc.), and
+social-login SDKs (Google / Facebook / Apple sign-in). An entry tagged
+[privacy-enhanced] uses the non-tracking variant
+(youtube-nocookie.com, Vimeo `?dnt=1`, OpenStreetMap) — those are the
+recommended fix, not an issue. CROSS-CHECK AGAINST THE POLICY:
+every widget below WITHOUT the [privacy-enhanced] marker, whose vendor
+is not named in the policy, is a `missing_section` issue. Tracking
+video embeds without consent disclosure + US-transfer disclosure are
+HIGH. Chat widgets not named in the policy are HIGH.
+
+{widgets_summary}
 
 POLICY TEXT (may be truncated; truncation is marked with […TRUNCATED…]):
 \"\"\"
@@ -152,6 +180,38 @@ def _format_data_flow(data_flow: list[DataFlowEntry]) -> str:
     return "\n".join(lines)
 
 
+def _format_channels(channels: list[ContactChannel]) -> str:
+    """Render contact channels (WhatsApp, mailto:, social profiles, …) as
+    evidence the model can cross-check against the policy text."""
+    if not channels:
+        return "(none observed)"
+    lines = []
+    for c in channels[:25]:
+        vendor = c.vendor or "—"
+        lines.append(f"- {c.kind}: {c.target} (vendor: {vendor}, country: {c.country})")
+    if len(channels) > 25:
+        lines.append(f"- (… {len(channels) - 25} more channels omitted)")
+    return "\n".join(lines)
+
+
+def _format_widgets(widgets: list[ThirdPartyWidget]) -> str:
+    """Render embedded third-party widgets (YouTube/Maps iframes, chat
+    widgets, social-login SDKs) as evidence for the policy cross-check."""
+    if not widgets:
+        return "(none observed)"
+    lines = []
+    for w in widgets[:25]:
+        vendor = w.vendor or "—"
+        enhanced = " [privacy-enhanced]" if w.privacy_enhanced else ""
+        lines.append(
+            f"- {w.category}/{w.kind}: {w.src} (vendor: {vendor}, "
+            f"country: {w.country}){enhanced}"
+        )
+    if len(widgets) > 25:
+        lines.append(f"- (… {len(widgets) - 25} more widgets omitted)")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Provider interface
 # ---------------------------------------------------------------------------
@@ -166,6 +226,9 @@ class AIProvider(ABC):
         policy_url: str,
         data_flow: list[DataFlowEntry],
         chars_sent: int,
+        channels: list[ContactChannel] | None = None,
+        imprint_url: str | None = None,
+        widgets: list[ThirdPartyWidget] | None = None,
     ) -> PrivacyAnalysis: ...
 
 
@@ -178,6 +241,9 @@ class NoOpProvider(AIProvider):
         policy_url: str,
         data_flow: list[DataFlowEntry],
         chars_sent: int,
+        channels: list[ContactChannel] | None = None,
+        imprint_url: str | None = None,
+        widgets: list[ThirdPartyWidget] | None = None,
     ) -> PrivacyAnalysis:
         return PrivacyAnalysis(
             provider="none",
@@ -223,6 +289,9 @@ class _OpenAILikeProvider(AIProvider):
         policy_url: str,
         data_flow: list[DataFlowEntry],
         chars_sent: int,
+        channels: list[ContactChannel] | None = None,
+        imprint_url: str | None = None,
+        widgets: list[ThirdPartyWidget] | None = None,
     ) -> PrivacyAnalysis:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -230,7 +299,10 @@ class _OpenAILikeProvider(AIProvider):
                 "role": "user",
                 "content": USER_PROMPT_TEMPLATE.format(
                     policy_url=policy_url or "(unknown)",
+                    imprint_url=imprint_url or "(not located)",
                     data_flow_summary=_format_data_flow(data_flow),
+                    contact_channels_summary=_format_channels(channels or []),
+                    widgets_summary=_format_widgets(widgets or []),
                     policy_text=policy_text,
                 ),
             },

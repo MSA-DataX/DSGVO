@@ -129,6 +129,58 @@ async def fetch_policy_text(
     return text or None
 
 
+COMMON_IMPRINT_PATHS: tuple[str, ...] = (
+    "/impressum",
+    "/impressum/",
+    "/imprint",
+    "/imprint/",
+    "/legal/impressum",
+    "/legal/imprint",
+    "/rechtliches/impressum",
+    "/kontakt/impressum",
+    "/ueber-uns/impressum",
+    "/en/imprint",
+    "/de/impressum",
+    "/mentions-legales",
+    "/mentions_legales",
+    "/legal-notice",
+    "/legalnotice",
+)
+
+
+async def _probe_paths(
+    base_url: str,
+    paths: tuple[str, ...],
+    timeout_s: float,
+    user_agent: str | None,
+) -> str | None:
+    """Shared helper: for each candidate path, HEAD (then GET on 405) the
+    URL against the base origin. Returns the first 2xx hit's final URL
+    after redirects, or None."""
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    headers: dict[str, str] = {"accept": "text/html,*/*;q=0.1"}
+    if user_agent:
+        headers["user-agent"] = user_agent
+
+    async with httpx.AsyncClient(
+        timeout=timeout_s, follow_redirects=True, headers=headers,
+    ) as client:
+        for path in paths:
+            candidate = urljoin(origin, path)
+            try:
+                r = await client.head(candidate)
+                if r.status_code == 405:
+                    r = await client.get(candidate)
+            except Exception:
+                continue
+            if 200 <= r.status_code < 300:
+                return str(r.url)
+    return None
+
+
 async def probe_common_paths(
     base_url: str,
     timeout_s: float = 5.0,
@@ -137,36 +189,24 @@ async def probe_common_paths(
     """Try common privacy-policy paths against the base URL.
 
     Used when the crawler's anchor-text detection comes up empty (typical
-    for large corporate sites with lazy-loaded footers). Uses cheap httpx
-    HEAD requests — no Playwright, no JS, just "does this URL return 2xx?".
-    Returns the first match, or None if nothing matched.
+    for large corporate sites with lazy-loaded footers).
     """
-    parsed = urlparse(base_url)
-    if not parsed.scheme or not parsed.netloc:
-        return None
-    origin = f"{parsed.scheme}://{parsed.netloc}"
+    hit = await _probe_paths(base_url, COMMON_POLICY_PATHS, timeout_s, user_agent)
+    if hit:
+        log.info("probe_common_paths (privacy) matched: %s", hit)
+    return hit
 
-    headers: dict[str, str] = {"accept": "text/html,*/*;q=0.1"}
-    if user_agent:
-        headers["user-agent"] = user_agent
 
-    async with httpx.AsyncClient(
-        timeout=timeout_s, follow_redirects=True, headers=headers,
-    ) as client:
-        for path in COMMON_POLICY_PATHS:
-            candidate = urljoin(origin, path)
-            try:
-                # Some hosts refuse HEAD (405) or return misleading sizes;
-                # fall back to GET but limit the response read.
-                r = await client.head(candidate)
-                if r.status_code == 405:
-                    r = await client.get(candidate)
-            except Exception:
-                continue
-            if 200 <= r.status_code < 300:
-                log.info("probe_common_paths matched: %s", candidate)
-                return str(r.url)  # use the final URL after redirects
-    return None
+async def probe_imprint_paths(
+    base_url: str,
+    timeout_s: float = 5.0,
+    user_agent: str | None = None,
+) -> str | None:
+    """Same as :func:`probe_common_paths` but for § 5 TMG Impressum URLs."""
+    hit = await _probe_paths(base_url, COMMON_IMPRINT_PATHS, timeout_s, user_agent)
+    if hit:
+        log.info("probe_common_paths (imprint) matched: %s", hit)
+    return hit
 
 
 def truncate_for_model(text: str, budget_chars: int) -> tuple[str, int]:
