@@ -159,9 +159,19 @@ export interface CookieReport {
 export interface PolicyIssue {
   category: PolicyIssueCategory;
   severity: Severity;
+  /** Fine-grained 1-10 priority. 10 = urgent legal risk. */
+  risk_score?: number;
   description: string;
   excerpt: string | null;
   suggested_text: string | null;
+  /** Minimal working code snippet (nginx directive, HTML, JS) when the
+   *  fix is technical. Null for pure policy-language fixes. */
+  suggested_code?: string | null;
+  /** 2-4 imperative bullet points that execute the fix operationally. */
+  action_steps?: string[];
+  /** When this finding could recur over time and deserves a scheduled-
+   *  scan alert — short description of what to watch for. */
+  monitoring_trigger?: string | null;
 }
 
 export interface PolicyTopicCoverage {

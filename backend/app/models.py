@@ -195,6 +195,11 @@ class CookieReport(BaseModel):
 class PolicyIssue(BaseModel):
     category: PolicyIssueCategory
     severity: Severity
+    # Finer-grained ordinal for sorting in dashboards with many issues.
+    # 1 = trivial, 10 = urgent legal risk. Severity remains authoritative
+    # for the three-bucket UI colour coding; risk_score lets the operator
+    # rank within a bucket ("of my 4 'high' issues, which is the worst?").
+    risk_score: int = Field(default=5, ge=1, le=10)
     description: str
     excerpt: str | None = None        # short verbatim quote from the policy
     # Ready-to-paste draft paragraph the operator can add to the policy to
@@ -204,6 +209,21 @@ class PolicyIssue(BaseModel):
     # existing copy rather than append new). The UI MUST render this with
     # a legal disclaimer; see PrivacyAnalysisCard.
     suggested_text: str | None = None
+    # Implementation snippet when the finding is technical (missing header,
+    # HTML form, JS). `nginx`/`apache` directives, HTML attributes etc.
+    # Complements suggested_text — a policy issue can have both (add
+    # paragraph to DSE + add nosniff header to server config). Null when
+    # no code artefact is helpful.
+    suggested_code: str | None = None
+    # 2-4 imperative bullet points. TL;DR for implementers who want the
+    # fix without reading the full description/draft. Empty list allowed
+    # when the fix is entirely contained in suggested_text/suggested_code.
+    action_steps: list[str] = []
+    # If this finding is something that should be tracked over time
+    # (e.g. "new third-party script", "policy URL changed"), describe the
+    # trigger. Consumed by the scheduled-scan Stage-2 feature — today it's
+    # surfaced as an informational line in the UI. Null for one-time fixes.
+    monitoring_trigger: str | None = None
 
 
 class PolicyTopicCoverage(BaseModel):

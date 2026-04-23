@@ -165,11 +165,17 @@ export function PrivacyAnalysisCard({ analysis }: { analysis: PrivacyAnalysis })
 
 function IssueCard({ issue }: { issue: PolicyIssue }) {
   const { t, lang } = useLang();
+  const steps = issue.action_steps ?? [];
   return (
     <li className="rounded-md border p-3">
-      <div className="mb-1 flex items-center gap-2">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
         <Badge className={severityColor(issue.severity)}>{t(`severity.${issue.severity}`)}</Badge>
         <span className="text-sm font-medium">{ISSUE_LABEL[lang][issue.category] ?? issue.category}</span>
+        {typeof issue.risk_score === "number" && (
+          <span className="ml-auto text-[11px] font-mono text-muted-foreground">
+            {t("privacy.risk", { score: issue.risk_score })}
+          </span>
+        )}
       </div>
       <p className="text-sm">{issue.description}</p>
       {issue.excerpt && (
@@ -177,8 +183,81 @@ function IssueCard({ issue }: { issue: PolicyIssue }) {
           “{issue.excerpt}”
         </blockquote>
       )}
+      {steps.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("privacy.steps.title")}
+          </div>
+          <ol className="list-inside list-decimal space-y-0.5 text-xs">
+            {steps.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ol>
+        </div>
+      )}
       {issue.suggested_text && <SuggestedTextBlock text={issue.suggested_text} />}
+      {issue.suggested_code && <SuggestedCodeBlock code={issue.suggested_code} />}
+      {issue.monitoring_trigger && (
+        <p className="mt-3 flex items-start gap-1.5 text-[11px] text-muted-foreground">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{t("privacy.monitor", { trigger: issue.monitoring_trigger })}</span>
+        </p>
+      )}
     </li>
+  );
+}
+
+// Pure code snippet (nginx directive, HTML fragment, JS). Different
+// styling from SuggestedTextBlock because this block is language-
+// agnostic — no legal disclaimer needed, since it's a technical fix,
+// not a policy text draft the user would paste into a legal document.
+function SuggestedCodeBlock({ code }: { code: string }) {
+  const { t } = useLang();
+  const [copied, setCopied] = React.useState(false);
+  const [open, setOpen] = React.useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard denied (iframe / insecure context) — user can still select manually
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-sky-500/40 bg-sky-500/5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs"
+      >
+        <span className="flex items-center gap-2 font-medium text-sky-700 dark:text-sky-400">
+          <Copy className="h-3.5 w-3.5" />
+          {t("privacy.code.title")}
+        </span>
+        <span className="text-muted-foreground">
+          {open ? t("privacy.draft.hide") : t("privacy.draft.show")}
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-sky-500/30 px-3 py-3">
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-background p-3 font-mono text-[11px] leading-relaxed">
+            {code}
+          </pre>
+          <div className="mt-2 flex justify-end">
+            <Button variant="outline" size="sm" onClick={copy}>
+              {copied ? (
+                <><ClipboardCheck className="mr-2 h-4 w-4" /> {t("privacy.draft.copied")}</>
+              ) : (
+                <><Copy className="mr-2 h-4 w-4" /> {t("privacy.code.copy")}</>
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

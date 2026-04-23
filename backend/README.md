@@ -310,3 +310,39 @@ The Next.js dashboard lives in [`../frontend`](../frontend) and consumes
 the JSON above. See its README for setup. It calls the backend via a
 same-origin proxy at `/api/scan` so you don't need to enable CORS in
 production — only the dev `*` is set in `app/main.py`.
+
+## Running the tests
+
+The test suite covers `scoring.py`, `consent_diff.py`, and `form_analyzer.py`
+with 107 unit tests. All tests are pure-Python (no Playwright, no network, no
+database) and complete in under a second.
+
+```powershell
+# Inside the backend venv
+cd "D:\DSGVO Scanner Tool\backend"
+.\.venv\Scripts\Activate.ps1
+
+# First time only
+pip install pytest pytest-asyncio
+
+# Run all tests
+pytest
+
+# Verbose output (shows each test name)
+pytest -v
+
+# Run only scoring tests
+pytest tests/test_scoring.py -v
+```
+
+Test files:
+
+| File | What it covers |
+|---|---|
+| `tests/test_scoring.py` | Sub-scores, all 15 hard-cap codes, `compute_risk` integration |
+| `tests/test_consent_diff.py` | Pre/post cookie dedup, storage dedup, data-flow dedup, request delta |
+| `tests/test_form_analyzer.py` | Purpose detection (Gewobag fix), PII category regex, issue generation, summary counts |
+
+Shared builders live in `tests/conftest.py`. Each builder returns a Pydantic
+model with sensible defaults — override only the fields that matter for a
+given test.

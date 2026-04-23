@@ -118,6 +118,11 @@ const EN: Dict = {
   "privacy.draft.copied":    "Copied",
   "privacy.draft.show":      "show",
   "privacy.draft.hide":      "hide",
+  "privacy.risk":            "Risk {score}/10",
+  "privacy.steps.title":     "Action steps",
+  "privacy.code.title":      "Implementation snippet",
+  "privacy.code.copy":       "Copy snippet",
+  "privacy.monitor":         "Monitor: {trigger}",
 
   // forms section
   "forms.title":             "Forms",
@@ -370,6 +375,11 @@ const DE: Dict = {
   "privacy.draft.copied":    "Kopiert",
   "privacy.draft.show":      "zeigen",
   "privacy.draft.hide":      "verbergen",
+  "privacy.risk":            "Risiko {score}/10",
+  "privacy.steps.title":     "Handlungsschritte",
+  "privacy.code.title":      "Implementierungs-Snippet",
+  "privacy.code.copy":       "Snippet kopieren",
+  "privacy.monitor":         "Überwachen: {trigger}",
 
   // forms
   "forms.title":             "Formulare",

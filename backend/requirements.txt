@@ -12,3 +12,10 @@ openai==1.51.0
 tenacity==9.0.0
 aiosqlite==0.20.0
 dnspython==2.6.1
+
+# --- test / dev ----------------------------------------------------------
+# Kept in the main requirements so a fresh venv + `pip install -r …` can
+# immediately run the suite. Split into a separate requirements-dev.txt
+# when the backend hits CI with distinct prod/dev environments.
+pytest==8.3.3
+pytest-asyncio==0.24.0

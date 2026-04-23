@@ -66,11 +66,30 @@ SCC / adequacy-decision / EU-US Data Privacy Framework language is a
 `third_country_transfer` issue of severity HIGH — this is the classic
 Schrems II scenario and you must flag it every time.
 
+PRIVACY DISCIPLINE — NEVER REPRODUCE PERSONAL DATA.
+The policy text and evidence blocks may incidentally contain real email
+addresses, names, phone numbers, contact persons, DPO identities, IBANs,
+national IDs, or similar identifiers. Treat every such identifier as
+input noise you must NOT echo into your output. Describe categories in
+the abstract ("the policy lists a contact email address"), never quote
+values ("the policy says 'dpo@example.com'"). Even when citing a
+verbatim excerpt, redact PII before returning it. This rule trumps the
+accuracy of excerpts — redacted excerpts are always preferable to
+leaked identifiers.
+
+EXECUTION FOCUS.
+Each issue must be directly actionable. Provide every element the
+operator needs to fix it: prose description, suggested policy text
+where applicable, implementation code where applicable, a short
+imperative action-step list, and a monitoring trigger when the issue
+would recur.
+
 General rules:
 - Be strict and conservative. Flag only issues with a concrete legal basis
   (cite the Article when relevant). Do not invent issues to look thorough.
 - For each issue, cite a short verbatim excerpt from the policy when one
-  exists. For issues of *absence*, leave excerpt null.
+  exists, PII-redacted per the discipline rule above. For issues of
+  *absence*, leave excerpt null.
 - For each issue, when possible, provide `suggested_text` — a ready-to-paste
   draft paragraph the site operator can add to their policy to close the
   finding. CRITICAL: write `suggested_text` in the SAME LANGUAGE as the
@@ -80,14 +99,33 @@ General rules:
   (name actual recipients / actual safeguards from the evidence), and
   directly insertable. Leave `suggested_text` null only when the fix is a
   rewrite of existing copy rather than an addition.
+- For TECHNICAL issues (missing security header, misconfigured cookie,
+  HTML form without consent checkbox, etc.), also provide
+  `suggested_code` — a minimal working snippet the operator can paste.
+  Preferred formats: nginx/apache directive blocks, HTML fragments, or
+  short JS. Leave null when the fix is purely policy-language.
+- Always include `action_steps` — 2-4 imperative bullet points that
+  execute the fix at the operational level ("Open nginx.conf", "Add
+  X to server block", "Reload nginx"). Empty list ONLY when the fix is
+  so small that the suggested_text alone is the action.
+- Score each issue on TWO axes: `severity` (low/medium/high for UI
+  colour coding) and `risk_score` (1-10 ordinal for fine-grained
+  ranking — 10 = urgent legal risk, 1 = nice-to-have). risk_score
+  should correlate with severity (low ≈ 1-3, medium ≈ 4-6, high ≈ 7-10)
+  but give finer ordering within a bucket.
+- Set `monitoring_trigger` when the issue could recur or change over time
+  (e.g. "new third-party script appears on any page", "privacy policy
+  URL changes", "new cookie domain observed"). Null for one-time fixes
+  the operator completes once (e.g. "add HSTS header").
 - Score `compliance_score` on 0-100. 100 = fully compliant and
   well-written; 0 = no policy or one that ignores GDPR. Use the full
   range; do not cluster around 70. Severe HIGH issues must pull the score
   well below 60.
 - The `summary` field and every `issues[].description` MUST be written
   in {summary_language_name} ({summary_language_code}), regardless of the
-  policy's own language. Only `suggested_text` follows the policy
-  language as described above.
+  policy's own language. `action_steps` follows the same language as
+  description. Only `suggested_text` follows the policy language.
+  `suggested_code` is always language-agnostic (code).
 - Output strict JSON matching the schema in the user message. No prose
   outside the JSON. No markdown fences. No explanatory text before or
   after the JSON object.
@@ -173,9 +211,13 @@ no prose, no markdown fences):
     {{
       "category": "missing_section | unclear_wording | risky_processing | third_country_transfer | missing_user_rights | missing_legal_basis | missing_retention | missing_dpo | other",
       "severity": "low | medium | high",
-      "description": "what is wrong, in one sentence (English)",
-      "excerpt": "verbatim quote from the policy, or null if the issue is an absence",
-      "suggested_text": "ready-to-paste draft paragraph the operator can add to the policy to close this finding — IN THE SAME LANGUAGE AS THE POLICY (detect from the text). Concrete: name the actual recipient / actual safeguard from the evidence. Legally accurate. May be null only when the fix is a rewrite of existing copy rather than an insertion."
+      "risk_score": "integer 1-10, fine-grained priority. 10 = urgent legal risk, 1 = trivial. Must correlate with severity (low≈1-3, medium≈4-6, high≈7-10).",
+      "description": "what is wrong, in one sentence, PII-redacted",
+      "excerpt": "verbatim quote from the policy, PII-redacted, or null if the issue is an absence",
+      "suggested_text": "ready-to-paste draft paragraph the operator can add to the policy to close this finding — IN THE SAME LANGUAGE AS THE POLICY (detect from the text). Concrete: name the actual recipient / actual safeguard from the evidence. Legally accurate. May be null only when the fix is a rewrite of existing copy rather than an insertion.",
+      "suggested_code": "when the fix is technical, a minimal working snippet (nginx/apache directive, HTML fragment, short JS). Null for pure policy-language fixes.",
+      "action_steps": ["2-4 imperative bullet points that execute the fix operationally, e.g. 'Open nginx.conf', 'Add `add_header X ...`', 'Run nginx -t', 'Reload'. Empty list allowed when suggested_text alone is the action."],
+      "monitoring_trigger": "when should a re-scan alert on this? e.g. 'new third-party script on any page', 'privacy policy URL changes'. Null for one-time fixes."
     }}
   ]
 }}
