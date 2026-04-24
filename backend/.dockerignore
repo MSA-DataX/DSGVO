@@ -1,0 +1,36 @@
+# Keep the build context small — these are either operator-local state
+# or genuinely incompatible with a Linux runtime (Windows venv paths).
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Persisted scan history + local DB — NEVER ship these. Dev artefacts.
+scans.db
+scans.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Secrets — .env must be mounted at runtime, not baked in.
+.env
+.env.*
+!.env.example
+
+# Editor / OS cruft.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Docker state.
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Playwright browser cache — the base image ships with Chromium already.
+.playwright/

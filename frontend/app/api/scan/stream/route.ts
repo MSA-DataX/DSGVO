@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authHeaderFromCookie, backendUrl } from "@/lib/serverAuth";
 
 // Same-origin proxy for the SSE scan stream. Two things matter here:
 //
@@ -12,14 +13,14 @@ export const runtime = "nodejs";
 export const maxDuration = 300; // scans with AI can push 60-90s; leave headroom
 
 export async function POST(req: NextRequest) {
-  const backend = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
   const body = await req.text();
 
-  const upstream = await fetch(`${backend}/scan/stream`, {
+  const upstream = await fetch(`${backendUrl()}/scan/stream`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       accept: "text/event-stream",
+      ...authHeaderFromCookie(),
     },
     body,
     // @ts-expect-error — Node fetch supports `duplex`, types lag behind.

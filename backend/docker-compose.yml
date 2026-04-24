@@ -1,0 +1,55 @@
+# Local Postgres for development against the production code path.
+#
+# Usage:
+#   docker compose up -d
+#   # then in backend/.env:
+#   #   DATABASE_URL=postgresql+asyncpg://scanner:scanner@localhost:5432/scanner
+#   alembic upgrade head
+#   python run_dev.py
+#
+# Without this file the app defaults to sqlite+aiosqlite:///scans.db, which
+# is still a valid dev mode — Postgres is only required to exercise the
+# multi-tenant data path (Phase 1.2+).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: scanner-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scanner
+      POSTGRES_PASSWORD: scanner
+      POSTGRES_DB: scanner
+    ports:
+      - "5432:5432"
+    volumes:
+      - scanner_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scanner -d scanner"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    # Arq job queue (Phase 3). Without this container the app still
+    # works in "sync mode" — /scan runs inline on the HTTP worker.
+    # Set REDIS_URL=redis://localhost:6379 in backend/.env and start
+    # `arq app.worker.WorkerSettings` in a second terminal to enable
+    # background scan execution.
+    image: redis:7-alpine
+    container_name: scanner-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - scanner_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  scanner_pgdata:
+  scanner_redisdata:

@@ -21,6 +21,8 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, TimeoutError as PWTimeout
 
+from app.security.ssrf import SsrfError, validate_url_safe
+
 
 log = logging.getLogger("policy_extractor")
 
@@ -165,19 +167,61 @@ async def _probe_paths(
     if user_agent:
         headers["user-agent"] = user_agent
 
+    # Manual redirect loop instead of ``follow_redirects=True``. Reason:
+    # a public host can 302 to an internal address (`http://127.0.0.1/admin`)
+    # and httpx would follow silently. We validate every hop against the
+    # SSRF rules and cap the chain at a small number so a pathological
+    # 301→302→301 loop can't hang us.
     async with httpx.AsyncClient(
-        timeout=timeout_s, follow_redirects=True, headers=headers,
+        timeout=timeout_s, follow_redirects=False, headers=headers,
     ) as client:
         for path in paths:
             candidate = urljoin(origin, path)
-            try:
-                r = await client.head(candidate)
-                if r.status_code == 405:
-                    r = await client.get(candidate)
-            except Exception:
+            final = await _safe_fetch_follow(client, candidate, method="HEAD")
+            if final is None:
                 continue
-            if 200 <= r.status_code < 300:
-                return str(r.url)
+            status, final_url = final
+            if status == 405:
+                alt = await _safe_fetch_follow(client, candidate, method="GET")
+                if alt is None:
+                    continue
+                status, final_url = alt
+            if 200 <= status < 300:
+                return final_url
+    return None
+
+
+async def _safe_fetch_follow(
+    client: httpx.AsyncClient,
+    start_url: str,
+    *,
+    method: str,
+    max_hops: int = 5,
+) -> tuple[int, str] | None:
+    """Follow redirects manually, SSRF-validating each intermediate URL.
+
+    Returns ``(status, final_url)`` or ``None`` on any error /
+    rejection. Caller treats ``None`` as "skip this candidate".
+    """
+    current = start_url
+    for _ in range(max_hops + 1):
+        try:
+            validate_url_safe(current)
+        except SsrfError as e:
+            log.warning("ssrf-guard: blocked policy fetch hop %s: %s", current, e)
+            return None
+        try:
+            r = await client.request(method, current)
+        except Exception:
+            return None
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get("location")
+            if not loc:
+                return r.status_code, current
+            current = urljoin(current, loc)
+            continue
+        return r.status_code, str(r.url)
+    # Ran out of hops — treat as failure rather than surfacing a loop.
     return None
 
 

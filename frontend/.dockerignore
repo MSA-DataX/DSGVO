@@ -1,0 +1,33 @@
+# Kept tight — the builder starts from package.json and the source tree.
+# Everything below is either local dev state, installed output, or
+# runtime artefacts that the build produces itself.
+
+node_modules/
+.next/
+out/
+build/
+coverage/
+
+# Env — must be passed at build time via build.args, never baked in.
+.env
+.env.*
+!.env.local.example
+
+# Editor / OS / git cruft.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.git/
+.gitignore
+
+# Docker state.
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# npm / logs.
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log

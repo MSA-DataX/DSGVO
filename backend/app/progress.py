@@ -94,3 +94,40 @@ class NoopReporter(ProgressReporter):
 
     def emit(self, stage: Stage, message: str, data: dict[str, Any] | None = None) -> None:
         return
+
+
+class RedisProgressReporter(ProgressReporter):
+    """Progress reporter for the Phase-3 worker path.
+
+    The scanner keeps calling ``emit`` synchronously from anywhere in
+    the pipeline (that's the contract — not every call site is an
+    async function). We enqueue locally, then a background drainer
+    task pulls events off the queue and ``publish_progress`` forwards
+    each one to Redis.
+
+    Why the queue + drainer instead of fire-and-forget
+    ``create_task(publish())`` on every emit: ordering. The HTTP
+    subscriber relies on events arriving in the sequence the scanner
+    produced them; two concurrent tasks don't promise that.
+    """
+
+    def __init__(self, pool: Any, scan_id: str) -> None:
+        super().__init__()
+        self._pool = pool
+        self._scan_id = scan_id
+
+    async def run(self) -> None:
+        """Drain the in-memory queue and republish to Redis until
+        :meth:`close` is called. Called once per reporter, typically
+        scheduled as an :func:`asyncio.create_task` and awaited at the
+        end of the scan."""
+        # Imported lazily to keep a plain ProgressReporter dep-free.
+        from app.progress_bus import publish_progress
+
+        async for event in self:
+            await publish_progress(self._pool, self._scan_id, {
+                "stage":   event.stage,
+                "message": event.message,
+                "data":    event.data,
+                "ts":      event.ts,
+            })

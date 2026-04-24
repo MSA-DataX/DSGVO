@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import tldextract
-from playwright.async_api import BrowserContext, async_playwright
+from playwright.async_api import BrowserContext, Request, Route, async_playwright
+
+from app.security.ssrf import SsrfError, validate_url_safe
 
 from app.config import settings
 from app.models import (
@@ -62,6 +65,60 @@ from app.progress import NoopReporter, ProgressReporter
 
 
 log = logging.getLogger("scanner")
+
+
+async def _install_ssrf_guard(context: BrowserContext) -> None:
+    """Block in-browser SSRF follow-ups (redirects, sub-resources).
+
+    The initial URL is validated in ``main.py`` before we reach this
+    module. That is not enough on its own: a public origin can 302 to
+    ``http://127.0.0.1/``, or inline a ``<script src>`` pointing at
+    ``169.254.169.254``. Playwright would follow both without asking.
+
+    The route handler runs for every network request the browser makes.
+    It caches the verdict per hostname so a scan doing 200 same-host
+    requests incurs one DNS check total. Data / blob / chrome-extension
+    schemes are passed through — those are local and our guard has
+    nothing to say about them.
+    """
+    host_cache: dict[str, bool] = {}
+
+    async def handler(route: Route, request: Request) -> None:
+        url = request.url
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            await route.abort()
+            return
+
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            # data:, blob:, about:, chrome-extension: — local, let through.
+            await route.continue_()
+            return
+
+        host = (parsed.hostname or "").lower()
+        cached = host_cache.get(host)
+        if cached is True:
+            await route.continue_()
+            return
+        if cached is False:
+            log.warning("ssrf-guard: blocking cached-bad host %s (%s)", host, url)
+            await route.abort()
+            return
+
+        try:
+            validate_url_safe(url)
+        except SsrfError as e:
+            host_cache[host] = False
+            log.warning("ssrf-guard: blocked %s: %s", url, e)
+            await route.abort()
+            return
+
+        host_cache[host] = True
+        await route.continue_()
+
+    await context.route("**/*", handler)
 
 
 def _registered_domain(url: str) -> str:
@@ -235,6 +292,7 @@ async def run_scan(
                 ignore_https_errors=True,
                 java_script_enabled=True,
             )
+            await _install_ssrf_guard(pre_ctx)
             pre_analyzer = NetworkAnalyzer(first_party_url=target)
             pre_analyzer.attach(pre_ctx)
             try:
@@ -258,6 +316,7 @@ async def run_scan(
                     ignore_https_errors=True,
                     java_script_enabled=True,
                 )
+                await _install_ssrf_guard(post_ctx)
                 post_analyzer = NetworkAnalyzer(first_party_url=target)
                 post_analyzer.attach(post_ctx)
                 try:

@@ -1,0 +1,71 @@
+# Caddy reverse proxy for the production compose stack.
+#
+# Caddy handles:
+#   - Port 80 → 443 redirect                    (automatic)
+#   - TLS certificates via Let's Encrypt        (automatic)
+#   - HSTS + modern TLS defaults                (automatic)
+#   - Gzip + Zstd response compression          (automatic)
+#
+# Routing:
+#   /api/*    → frontend  (Next.js Route Handlers — cookie auth, proxies)
+#   /_next/*  → frontend  (Next.js static + server components)
+#   /         → frontend  (dashboard + marketing)
+#
+# The backend is deliberately NOT routed directly from the internet.
+# Every API call originates from a Next.js route handler in the
+# frontend container (/api/*), which reads the auth cookie and forwards
+# as Bearer. Same-origin-only for the FastAPI means we dodge a class of
+# CSRF / token-in-URL bugs.
+#
+# Exception: Mollie webhook. Mollie POSTs directly, browser-less, so
+# /billing/webhook/* has to reach the backend. Routed below.
+
+{$DOMAIN} {
+    # TLS via ACME. Caddy picks Let's Encrypt by default; providing
+    # the email satisfies the ToS and lets them contact you about
+    # expiring certs if the renewal ever fails.
+    tls {$TLS_EMAIL}
+
+    encode zstd gzip
+
+    # Security headers. Caddy's defaults are good, but some audits
+    # check for these explicitly. HSTS via Strict-Transport-Security
+    # is already set by Caddy when serving HTTPS.
+    header {
+        # Refuse to be iframed by third parties.
+        X-Frame-Options "SAMEORIGIN"
+        # No MIME sniffing.
+        X-Content-Type-Options "nosniff"
+        # Conservative referrer policy — origin only on cross-origin.
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Disable legacy / sensitive browser features we don't use.
+        Permissions-Policy "geolocation=(), camera=(), microphone=(), payment=()"
+        # Remove Caddy's own Server banner — small info-leak reduction.
+        -Server
+    }
+
+    # -- Backend: Mollie webhook only -----------------------------------
+    # Mollie can't send a cookie, so the Next.js proxy doesn't apply.
+    # Token-in-path authenticates; see backend billing router.
+    handle /billing/webhook/* {
+        reverse_proxy backend:8080
+    }
+
+    # -- Frontend: everything else --------------------------------------
+    # Next.js serves /api/* (proxies that forward cookie → Bearer),
+    # plus the dashboard routes and static assets.
+    handle {
+        reverse_proxy frontend:3000 {
+            # Trust Caddy's own X-Forwarded-* so FastAPI's rate-limit
+            # sees the real client IP once a request reaches the
+            # backend via /api/* proxy.
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # Structured access logs — shipped to stdout, read by docker logs.
+    log {
+        output stdout
+        format json
+    }
+}

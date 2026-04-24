@@ -498,3 +498,31 @@ class ScanListItem(BaseModel):
     score: int
     rating: RiskRating
     created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: async scan job responses
+# ---------------------------------------------------------------------------
+
+ScanJobStatusName = Literal["queued", "running", "done", "failed"]
+
+
+class ScanJobCreated(BaseModel):
+    """Return value of POST /scan/jobs — the id the client polls against."""
+    id: str
+    status: ScanJobStatusName
+    url: str
+    created_at: str
+
+
+class ScanJobStatusResponse(BaseModel):
+    """Return value of GET /scan/jobs/{id}. ``result`` is populated only
+    when ``status == 'done'``; ``error`` only when ``status == 'failed'``."""
+    id: str
+    status: ScanJobStatusName
+    url: str
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
+    result: ScanResponse | None = None

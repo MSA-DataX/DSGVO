@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authHeaderFromCookie, backendUrl } from "@/lib/serverAuth";
 
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
-  const backend = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
   const limit = req.nextUrl.searchParams.get("limit") ?? "50";
-  const upstream = await fetch(`${backend}/scans?limit=${encodeURIComponent(limit)}`);
+  const upstream = await fetch(`${backendUrl()}/scans?limit=${encodeURIComponent(limit)}`, {
+    headers: { ...authHeaderFromCookie() },
+  });
   const text = await upstream.text();
   return new NextResponse(text, {
     status: upstream.status,

@@ -1,0 +1,201 @@
+# Production single-host stack.
+#
+# What runs:
+#   - postgres  (data layer)
+#   - redis     (background-job queue + progress pub/sub)
+#   - backend   (FastAPI — HTTP API)
+#   - worker    (Arq — consumes scan jobs)
+#   - frontend  (Next.js — dashboard + marketing)
+#   - caddy     (reverse proxy + auto-TLS via Let's Encrypt)
+#
+# Networks:
+#   - internal  Backend data plane. Postgres / Redis are ONLY on here.
+#               Even if caddy or the frontend is compromised the DB
+#               isn't reachable.
+#   - web       Caddy sits on both networks so it can reach backend /
+#               frontend to reverse-proxy.
+#
+# Start:
+#     cp .env.production.example .env
+#     # fill in JWT_SECRET, POSTGRES_PASSWORD, DOMAIN, TLS_EMAIL, OPENAI_API_KEY, MOLLIE_*
+#     docker compose -f docker-compose.prod.yml up -d
+#     docker compose -f docker-compose.prod.yml exec backend python -m app.cli.promote you@example.com
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-scanner}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scanner} -d ${POSTGRES_DB:-scanner}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    # The Dockerfile runs `alembic upgrade head && uvicorn …` by default.
+    # No override here — we WANT migrations on every backend start.
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-scanner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scanner}"
+      REDIS_URL: "redis://redis:6379"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_TTL_MINUTES: ${JWT_TTL_MINUTES:-10080}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://${DOMAIN}}
+      SCAN_USER_AGENT: ${SCAN_USER_AGENT:-GDPR-Scanner/1.0 (+compliance audit)}
+      # AI provider (optional — app gracefully degrades to NoOp).
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
+      # Billing (optional — app stays on admin-assigned-plans mode without these).
+      MOLLIE_API_KEY: ${MOLLIE_API_KEY:-}
+      APP_BASE_URL: ${APP_BASE_URL:-https://${DOMAIN}}
+      MOLLIE_WEBHOOK_TOKEN: ${MOLLIE_WEBHOOK_TOKEN:-}
+      # Observability (Phase 7). All optional — no SENTRY_DSN = local-only logs.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      APP_VERSION: ${APP_VERSION:-dev}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [internal, web]
+    healthcheck:
+      # Playwright base image has `curl` available.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    # Resource guardrails: one Chromium per scan is memory-heavy.
+    # Numbers are conservative for a 4 GB VM; tune for your host.
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    # Reuse the backend image, different entry point. No migrations
+    # here — backend service runs them, worker just processes jobs.
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-scanner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scanner}"
+      REDIS_URL: "redis://redis:6379"
+      JWT_SECRET: ${JWT_SECRET}
+      SCAN_USER_AGENT: ${SCAN_USER_AGENT:-GDPR-Scanner/1.0 (+compliance audit)}
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
+      # Observability: worker shares the same log/sentry config so an
+      # error during a background scan lands in the same Sentry project
+      # with the same APP_VERSION tag as the HTTP service.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      APP_VERSION: ${APP_VERSION:-dev}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        # Wait for the backend's first boot so migrations have run
+        # before the worker tries to read tables.
+        condition: service_healthy
+    networks: [internal]
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # NEXT_PUBLIC_* inline at build time — must be set for the
+        # browser bundle to point at the right backend / mode.
+        NEXT_PUBLIC_BACKEND_URL: http://backend:8080
+        NEXT_PUBLIC_SCAN_MODE: ${NEXT_PUBLIC_SCAN_MODE:-async}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Server-side fetch from Next's API routes to FastAPI goes over
+      # the internal network (service name resolution).
+      NEXT_PUBLIC_BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [internal, web]
+    healthcheck:
+      # Next.js standalone listens on /. A 200 or 3xx counts as alive.
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"     # HTTP → Caddy redirects to 443 automatically
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data           # stores the Let's Encrypt cert + key
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      TLS_EMAIL: ${TLS_EMAIL:?TLS_EMAIL is required for Let's Encrypt}
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks: [web]
+
+networks:
+  internal:
+    internal: true    # no bridge-to-host — the DB is unreachable from outside
+  web:
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

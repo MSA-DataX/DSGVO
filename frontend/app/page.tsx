@@ -3,6 +3,8 @@
 import * as React from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { RequireAuth } from "@/components/auth/RequireAuth";
+import { UserMenu } from "@/components/auth/UserMenu";
 import { useLang } from "@/lib/LanguageContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScanForm } from "@/components/scan/ScanForm";
@@ -24,7 +26,7 @@ import { VulnerableLibrariesSection } from "@/components/scan/VulnerableLibrarie
 import { PrivacyAnalysisCard } from "@/components/scan/PrivacyAnalysisCard";
 import { FormsSection } from "@/components/scan/FormsSection";
 import { ChapterHeader } from "@/components/scan/ChapterHeader";
-import { getScan, streamScan } from "@/lib/api";
+import { getScan, streamScanAuto } from "@/lib/api";
 import type { ProgressEvent, ScanResponse } from "@/lib/types";
 
 export default function Home() {
@@ -57,7 +59,7 @@ export default function Home() {
     setEvents([]);
 
     try {
-      await streamScan(
+      await streamScanAuto(
         { url, ...opts, ui_language: lang },
         {
           onProgress: (ev) => setEvents((prev) => [...prev, ev]),
@@ -89,6 +91,7 @@ export default function Home() {
   }
 
   return (
+    <RequireAuth>
     <main className="container mx-auto max-w-6xl py-8">
       <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         {/* Logo lives in public/logo.png (the dark banner artwork). Has its own
@@ -105,6 +108,7 @@ export default function Home() {
             <p className="text-sm text-muted-foreground">{t("app.subtitle")}</p>
           </div>
           <LanguageSwitcher />
+          <UserMenu />
         </div>
       </header>
 
@@ -134,6 +138,7 @@ export default function Home() {
         />
       </div>
     </main>
+    </RequireAuth>
   );
 }
 

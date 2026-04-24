@@ -17,14 +17,35 @@ Currently a single-node dev tool, not yet a multi-tenant SaaS. See the
 
 ```
 .
-├── backend/                    FastAPI + Playwright + OpenAI/Azure + SQLite
+├── backend/                    FastAPI + Playwright + OpenAI/Azure + SQLite/Postgres
 │   ├── app/
 │   │   ├── main.py             HTTP endpoints (/scan, /scan/stream, /scans)
 │   │   ├── scanner.py          Orchestrator — owns Playwright lifecycle
 │   │   ├── config.py           Pydantic Settings (.env driven)
 │   │   ├── models.py           ALL Pydantic models. Update with frontend/lib/types.ts in lockstep.
 │   │   ├── progress.py         SSE progress reporter (asyncio.Queue pub/sub)
-│   │   ├── storage.py          aiosqlite persistence — one `scans` table
+│   │   ├── db.py               SQLAlchemy 2.0 async engine + session_scope (DATABASE_URL driven)
+│   │   ├── db_models.py        ORM models — User, Organization, Membership, Scan
+│   │   ├── storage.py          SQLAlchemy persistence — same code path for SQLite + Postgres
+│   │   ├── auth.py             Password hashing (bcrypt) + JWT + get_current_user + require_superuser
+│   │   ├── routers/auth.py     POST /auth/signup, POST /auth/login, GET /auth/me
+│   │   ├── routers/admin.py    GET users/organizations/audit, POST promote/demote/reset-password
+│   │   ├── audit.py            log_action helper — append-only AuditLog writes from admin paths
+│   │   ├── cli/promote.py      `python -m app.cli.promote [--revoke] <email>` — bootstrap / revoke
+│   │   ├── security/ssrf.py    validate_url_safe — blocks loopback/private/metadata at /scan
+│   │   ├── security/rate_limit.py  Per-tenant + per-IP sliding-window (in-memory; swap to Redis when multi-worker)
+│   │   ├── billing/plans.py    Hardcoded Plan catalogue (free / pro / business) — versioned in git
+│   │   ├── billing/subscriptions.py  Quota + set_plan + get_subscription_summary
+│   │   ├── billing/mollie.py   Async httpx wrapper around the 5 Mollie REST calls we use
+│   │   ├── billing/checkout.py Checkout orchestration + webhook handler (Phase 5b)
+│   │   ├── routers/billing.py  GET /billing/plans + /subscription · POST /checkout /cancel /webhook/{token}
+│   │   ├── observability/logging.py  Request-ID ContextVar + JsonFormatter + configure_logging
+│   │   ├── observability/metrics.py  Prometheus counters + /metrics renderer
+│   │   ├── observability/sentry.py   Opt-in Sentry init with PII scrubber
+│   │   ├── jobs.py             Arq enqueue helper — POST /scan/jobs calls enqueue_scan()
+│   │   ├── worker.py           Arq WorkerSettings + run_scan_task — started via `arq app.worker.WorkerSettings`
+│   │   ├── progress.py         ProgressReporter (asyncio.Queue) + RedisProgressReporter (drainer → pub/sub)
+│   │   ├── progress_bus.py     publish_progress / subscribe_progress — Redis pub/sub wrapper for Phase 3b
 │   │   └── modules/
 │   │       ├── crawler.py              BFS crawl, emits per-page progress
 │   │       ├── network_analyzer.py     Captures every request; offline country map
@@ -35,25 +56,47 @@ Currently a single-node dev tool, not yet a multi-tenant SaaS. See the
 │   │       ├── consent_diff.py         Pre vs post-consent diff engine
 │   │       ├── form_analyzer.py        Deterministic; owns PII_CATEGORIES (exported)
 │   │       └── scoring.py              5 sub-scores → hard caps → recommendations
+│   ├── alembic/                Migration scripts (env.py reads DATABASE_URL)
+│   ├── alembic.ini
+│   ├── Dockerfile              Production image — mcr.microsoft.com/playwright/python base
+│   ├── docker-compose.yml      Local Postgres + Redis for the production code path
 │   ├── run_dev.py              Entry point — pins Windows Proactor loop BEFORE uvicorn imports
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/                   Next.js 14 App Router + Tailwind
 │   ├── app/
-│   │   ├── page.tsx            Whole single-page dashboard
-│   │   ├── layout.tsx          MSA DataX branding, favicon
-│   │   ├── api/scan/route.ts           Batch proxy to backend /scan
-│   │   ├── api/scan/stream/route.ts    SSE proxy — duplex:half, no buffering
-│   │   └── api/scans/(...)             History endpoints proxy
+│   │   ├── page.tsx            Whole single-page dashboard (gated by <RequireAuth>)
+│   │   ├── login/page.tsx      Sign-in form
+│   │   ├── signup/page.tsx     Sign-up form
+│   │   ├── layout.tsx          MSA DataX branding, favicon, AuthProvider mount
+│   │   ├── api/scan/route.ts           Batch proxy to backend /scan — forwards cookie→Bearer
+│   │   ├── api/scan/stream/route.ts    SSE proxy — duplex:half, no buffering, Bearer forwarded
+│   │   ├── api/scan/jobs/(...)         Async scan enqueue + status + events proxy (Phase 3c)
+│   │   ├── api/scans/(...)             History endpoints proxy (auth-forwarded)
+│   │   ├── api/admin/(...)             Admin endpoints proxy — forwards to /admin/* (Phase 4b)
+│   │   ├── admin/page.tsx              /admin dashboard (Users · Orgs · Audit), gated by RequireAdmin
+│   │   ├── api/billing/(...)           Billing endpoints proxy — plans/subscription/checkout/cancel (Phase 5c)
+│   │   ├── billing/page.tsx            /billing — current plan + usage meter + upgrade / cancel UI
+│   │   └── api/auth/(...)              signup / login / logout / me — owns the httpOnly cookie
 │   ├── components/
 │   │   ├── ui/                 Inlined shadcn-compatible primitives (button, card, badge, …)
+│   │   ├── auth/               AuthProvider · RequireAuth · RequireAdmin · UserMenu
 │   │   └── scan/               Domain components (RiskScoreCard, DataFlowTable, …)
 │   ├── lib/
 │   │   ├── types.ts            Hand-mirrored from backend/app/models.py — names MUST match
-│   │   ├── api.ts              runScan / streamScan / listScans / getScan / deleteScan
+│   │   ├── api.ts              sync (streamScan) + async (streamScanAsync) + auto dispatch (streamScanAuto)
+│   │   ├── auth.ts             Client-side signup / login / logout / fetchMe
+│   │   ├── admin.ts            Client wrappers for /api/admin/* (listUsers, promoteUser, …)
+│   │   ├── billing.ts          Client wrappers for /api/billing/* (getPlans, startCheckout, formatEuro)
+│   │   ├── serverAuth.ts       Server-side cookie helpers (Next.js route handlers)
 │   │   └── utils.ts            cn() + color helpers keyed to Tailwind `risk-*` palette
 │   ├── public/logo.png         MSA DataX brand logo
+│   ├── Dockerfile              Production image — multi-stage, Next.js standalone output
 │   └── .env.local.example
+├── deploy/
+│   └── Caddyfile               Production reverse proxy (Phase 6) — auto-TLS, sec headers
+├── docker-compose.prod.yml     Full production stack (Phase 6)
+└── .env.production.example     Template for production .env
 └── README.md
 ```
 
@@ -154,6 +197,260 @@ else → `backend/.env`.
   issues. Recommendations filter on `purpose == "collection"` — do NOT
   grep issue strings (past bug where "no consent checkbox" in negated text
   matched the filter).
+
+**11. Auth token lives in an httpOnly cookie, never in JS.**
+- The client NEVER sees the JWT. `/api/auth/{signup,login}` strip the
+  `access_token` field from the backend response and write it to an
+  `msadatax_auth` cookie (httpOnly, SameSite=Lax, Secure in prod).
+- Every `/api/*` route handler in `frontend/app/api/` reads the cookie
+  via `authHeaderFromCookie()` and forwards it as `Authorization: Bearer
+  <token>` to FastAPI. Do NOT try to read `document.cookie` — it's not
+  readable anyway, and the client libraries in `lib/api.ts` rely on the
+  proxy to do the work.
+- On logout, `/api/auth/logout` clears the cookie. The JWT itself is
+  stateless so it keeps validating until TTL; the cookie-clear is what
+  stops the browser from sending it. A future refresh-token flow adds
+  server-side revocation.
+
+**12. Every scan read/write is scoped by `organization_id`.**
+- `AuthedUser.organization_id` is resolved in `get_current_user` from the
+  user's oldest membership. Handlers MUST pass it to the storage layer:
+  `save_scan(result, organization_id=...)`, `list_scans(organization_id,
+  limit)`, `get_scan(id, organization_id)`, `delete_scan(id,
+  organization_id)`. No "admin bypass" function exists; if you need one
+  later, add a distinct function with a distinct name and test.
+- Cross-tenant access returns `None` / empty list / `False`, which HTTP
+  handlers translate to plain 404 — same as "ID doesn't exist". This is
+  deliberate: leaking existence (403 vs 404) tells an attacker they hit
+  a real scan ID belonging to someone else.
+- `tests/test_auth.py::TestTenantIsolation` guards the invariant. When
+  adding a new scan endpoint, add a test that asserts cross-tenant 404.
+
+**13. SSRF validation happens at THREE layers.**
+- **Entry** (`/scan`, `/scan/stream` in `main.py`): `validate_url_safe`
+  rejects `file://` / `javascript:` etc, IP literals in private /
+  loopback / link-local / multicast, and DNS hostnames that resolve
+  there (iterated — `[public, private]` still loses).
+- **Browser** (`scanner._install_ssrf_guard` via `context.route`):
+  every request the browser makes — initial nav, 3xx follow-ups,
+  subresources — is re-validated. Per-hostname cache so the same-host
+  requests in a single scan only pay one DNS check. Data / blob / etc
+  are passed through.
+- **httpx** (`policy_extractor._safe_fetch_follow`): redirect chains
+  are walked manually with `follow_redirects=False`. Each `Location`
+  is validated before the next request, and the chain is capped at a
+  small number of hops to kill pathological loops.
+- What's still NOT covered: DNS rebinding (host resolves public at
+  validation time, private at fetch time). Requires pinning the
+  resolved IP in the transport — bigger change. Production should also
+  have a network-layer control (egress firewall / NetworkPolicy).
+- Metadata hostnames (`169.254.169.254`, `metadata.google.internal`)
+  are in the blocklist by name even though the IP ranges catch them too.
+
+**14. Rate limits are per-tenant (scans) and per-IP (auth).**
+- `scan_rate_limiter.check(f"scan:{org_id}")` on `/scan` + `/scan/stream`.
+  Default 3/min + 50/day. Checked AFTER SSRF so 400s don't burn budget.
+- `auth_rate_limiter.check(f"auth:{client_ip}")` on `/auth/signup` +
+  `/auth/login`. Default 5/min + 50/day. Signup and login share the
+  bucket so an attacker can't rotate endpoints. Use `client_ip(request)`
+  helper — it honours the leftmost `X-Forwarded-For` hop (trust a
+  single proxy).
+- Both are in-memory singletons. When moving to multiple workers
+  (Phase 3), swap the internal dict for Redis; the public API stays
+  identical. Tests reset both in the `app_with_db` fixture to isolate
+  cases. 429s include `Retry-After` so clients back off.
+
+**15. Sync mode and async mode both exist — different endpoints.**
+- **Sync**: `POST /scan` and `POST /scan/stream` run the Playwright
+  scan inline on the HTTP worker. Default deploy; no Redis needed.
+  This is what the frontend uses today.
+- **Async**: `POST /scan/jobs` creates a row in `queued` status via
+  `create_pending_scan`, calls `enqueue_scan`, and returns 202 +
+  `scan_id`. A separate `arq app.worker.WorkerSettings` process pops
+  the job, calls `run_scan`, and updates the row through `mark_running`
+  → `mark_done` / `mark_failed`. The frontend polls `GET /scan/jobs/{id}`
+  for the result.
+- Only enable async mode by setting `REDIS_URL`. `/scan/jobs` returns
+  503 otherwise so the operator can't forget to start the worker.
+- `list_scans` filters `status="done"` so queued/running placeholders
+  (score=0 rating="critical") never appear in the history UI.
+- Every write path — sync save_scan, create_pending_scan, mark_done —
+  stamps `organization_id`. Cross-tenant reads still 404 (convention #12).
+
+**16. Async-mode progress lives in Redis pub/sub (channel per scan).**
+- Worker builds a `RedisProgressReporter(pool, scan_id)`, passes it to
+  `run_scan(req, progress=reporter)`. Each `reporter.emit` queues
+  locally; a background drainer publishes to channel
+  `scan:progress:{scan_id}` preserving order. Worker publishes a final
+  `stage="done"` / `stage="error"` event directly (bypassing the
+  drainer) AFTER `mark_done` / `mark_failed` so subscribers always see
+  a terminal event even if the scanner crashed mid-emit.
+- `GET /scan/jobs/{id}/events` subscribes to that channel, re-checks
+  DB status after subscribing (race-free: if the scan finished
+  between the initial status check and subscribe, the re-check catches
+  it and emits a snapshot + closes). Closes on receiving a terminal
+  event.
+- Events are ephemeral. The authoritative state is the Scan DB row;
+  the stream is purely progress UX. A client that reconnects mid-scan
+  gets the current DB state via the snapshot path and the rest via
+  fresh subscriptions.
+- Tests never touch real Redis: `tests/test_progress_bus.py` pairs a
+  `_FakePool` with a `_FakePubSub` that routes publishes to in-memory
+  queues, matching the real API surface we actually call.
+
+**17. Frontend scan mode is a build-time env var, default sync.**
+- `lib/api.ts` exports `streamScan` (sync path, inline SSE via
+  `/api/scan/stream`) AND `streamScanAsync` (enqueue → SSE events →
+  fetch result, via `/api/scan/jobs*`). `streamScanAuto` reads
+  `NEXT_PUBLIC_SCAN_MODE` at build/boot and dispatches.
+- `app/page.tsx` only ever calls `streamScanAuto` — the UI doesn't
+  know which mode it's in. Switching modes is a one-line env change
+  + rebuild.
+- Unset / `"sync"` → behaves exactly like before Phase 3. `"async"`
+  needs `REDIS_URL` + a running `arq app.worker.WorkerSettings`
+  process; without those the enqueue call 503s and the UI surfaces it
+  via `handlers.onError`.
+- Both modes share `StreamHandlers` (onProgress / onResult / onError)
+  so component code (ScanProgress, RiskScoreCard, …) is mode-agnostic.
+
+**18. System-wide admin is a separate privilege, not a tenant role.**
+- `User.is_superuser` is distinct from `Membership.role`. Owner-of-an-
+  org is tenant-level; superuser is platform-level. Normal
+  `get_current_user` ignores the flag; `/admin/*` sits behind
+  `require_superuser` which 403s authenticated-but-not-admin callers
+  (vs 404 that scan endpoints use — see #12). The distinction is
+  intentional: "I know who you are, you can't do this" is the
+  meaningful signal for an auditor reviewing access logs.
+- First superuser is granted out-of-band via
+  `python -m app.cli.promote <email>`. There is deliberately no HTTP
+  path to bootstrap — someone has to own the server. CLI promotions
+  also write an audit row (with a null `actor_user_id`), so even the
+  first administrative action is traceable.
+- Every admin mutation calls `app.audit.log_action(...)` after the
+  guarded operation. `details` must be small and PII-free (field
+  names, NOT plaintext secrets / scan payloads). A failure in the
+  audit insert is logged but does not roll back the privileged op —
+  the user-visible action is the contract we honour first.
+- Self-demote is blocked at the HTTP layer (would lock the system
+  out). Use the CLI with `--revoke` if that's genuinely wanted.
+- `DELETE /admin/users/{id}` does NOT exist yet — deleting a user
+  who is the last owner of an org is a design question (org
+  deletion? membership reassignment?) we haven't answered.
+
+**19. Plans are hardcoded, quotas reset on the 1st of each month.**
+- Plan catalogue (`free` / `pro` / `business`) lives in
+  [app/billing/plans.py](backend/app/billing/plans.py) — NOT in the DB.
+  Price + quota changes ship as code changes so a runtime misconfig
+  can't silently downgrade a paying customer. Phase 5b will add a
+  `mollie_price_id` per plan; stays in the same module.
+- `Subscription` row is absent for free-tier orgs. Absence ≡ free.
+  When someone upgrades the row is inserted with `plan_code="pro"`.
+  Only ONE subscription per org (organization_id is the PK).
+- Quota window = first-of-current-month UTC. No pro-rata, no trial,
+  no rollover. Phase 5b swaps this for Mollie's period boundaries on
+  a per-subscription basis (`current_period_start` column already
+  exists for that handoff).
+- `check_scan_quota(org_id)` is called from all three scan entry
+  points (/scan, /scan/stream, /scan/jobs) AFTER SSRF + rate-limit.
+  Order matters: a 402 must mean "you used your allowance", never
+  "you tried to SSRF us" (400) or "you spammed us" (429). Over-quota
+  raises 402 Payment Required with a structured detail payload
+  (`plan`, `scans_used`, `scans_quota`).
+- Admin endpoint `POST /admin/organizations/{id}/set-plan` is the
+  manual override. Every invocation writes
+  `action="organization.set_plan"` to the audit log with the chosen
+  plan_code in `details` — same rules as convention #18. Mollie's
+  webhook handler (Phase 5b) calls the same `set_plan` helper.
+
+**20. Mollie billing is opt-in via three env vars; graceful 503 otherwise.**
+- `MOLLIE_API_KEY`, `APP_BASE_URL`, `MOLLIE_WEBHOOK_TOKEN` must ALL
+  be set. Missing any → `/billing/checkout`, `/billing/cancel`, and
+  `/billing/webhook/{token}` all return 503. Phase 5a (admin-assigned
+  plans) still works in that mode — good for dev boxes.
+- Webhook authentication is a random URL-path token + constant-time
+  compare + refetch-from-Mollie. Mollie does not sign webhooks, so
+  the path token IS the shared secret. Rotate it alongside the API
+  key. Wrong token → 404 (not 403) so probers can't distinguish
+  "no such endpoint" from "wrong token".
+- Checkout flow mirrors Mollie's mandate pattern: create Customer →
+  first-payment (sequenceType=first, full plan price) → on webhook
+  `payment.paid` → create recurring Subscription. The row is parked
+  with `status="past_due"` between checkout and first-payment-settled
+  so quota enforcement doesn't let the user scan before they've paid.
+- The webhook handler is idempotent on every branch — Mollie retries
+  any non-2xx and occasionally double-delivers on flaky networks.
+  Marker: a second `payment.paid` delivery sees
+  `mollie_subscription_id` already populated and skips
+  `create_subscription`; the `create_subscription` call count is
+  the test invariant.
+- Cancel is Mollie-side + DB-side: we call
+  `DELETE /customers/{cid}/subscriptions/{sid}` and set
+  `status="canceled"`. The user keeps their plan until
+  `current_period_end` — we don't downgrade on cancel since they
+  paid for this month. Period-end downgrade is future cron work.
+- `MollieClient` is a Protocol, not a base class. Tests inject a
+  `_FakeMollieClient` via `set_mollie_client_for_tests(...)`. Real
+  Mollie API is never hit in tests.
+
+**21. Production deploy is a single-host Docker Compose stack.**
+- One Dockerfile per service folder (`backend/Dockerfile`,
+  `frontend/Dockerfile`); the worker reuses the backend image with a
+  different `command:`. That keeps migrations + scan logic bit-
+  identical between HTTP and job-consumer paths.
+- `docker-compose.prod.yml` wires postgres + redis + backend + worker
+  + frontend + caddy. Two networks: `internal` (db / cache / app —
+  marked `internal: true`, no host bridge) and `web` (caddy + the
+  services caddy proxies to). The DB is unreachable from outside the
+  host by construction.
+- Caddy handles TLS (auto Let's Encrypt), HSTS, static-asset encoding,
+  security headers. `deploy/Caddyfile` routes `/billing/webhook/*`
+  straight to the backend (Mollie can't send cookies) and everything
+  else to the Next.js frontend, which in turn proxies `/api/*` to the
+  backend via service-name DNS. Same-origin-only for the FastAPI is
+  the default — one less class of CSRF / token-in-URL bug.
+- Backend's default CMD runs `alembic upgrade head` before uvicorn.
+  A fresh VM boots into a migrated schema with zero manual steps.
+  Worker depends on `backend` being healthy, so the worker never
+  hits un-migrated tables.
+- First superuser promotion happens via
+  `docker compose exec backend python -m app.cli.promote …` — there
+  is STILL no HTTP bootstrap (convention #18).
+- The production compose file is the seam for horizontal scale:
+  swap Postgres for a managed EU RDS, add a second host behind an
+  external LB, push images to a registry instead of building in
+  place. All additive — none of the app code changes.
+
+**22. Observability is opt-in and PII-aware.**
+- Structured logging: one middleware generates / reuses an
+  ``X-Request-ID`` per request and stashes it on a ``ContextVar``.
+  Every log record picks it up via ``RequestIdFilter`` so a single
+  request is traceable across async tasks without threading a param.
+  `LOG_FORMAT=json` emits one JSON line per record (Loki / CloudWatch
+  ready); `LOG_FORMAT=text` keeps the dev terminal readable.
+- Prometheus at `/metrics` — text format, scraped by a sidecar or
+  external Prometheus. Metrics are **in-memory per process** for now.
+  Multi-worker deploys want `prometheus_client.multiprocess` with a
+  shared tmpfs; the counter API stays identical, so the swap is
+  additive. Serve `/metrics` behind an IP allowlist on the reverse
+  proxy — the counter values aren't secret but shouldn't be public.
+- Route labels use the **FastAPI route template**
+  (`/scans/{scan_id}`) not the concrete URL. Otherwise every scan id
+  becomes its own series and Prometheus melts. ``normalise_path``
+  enforces this.
+- Sentry is opt-in via ``SENTRY_DSN``. Without it the SDK is not
+  imported. With it, only 5xx + unhandled exceptions ship — 4xx are
+  caller errors and would bury real signal. ``before_send`` scrubs
+  Authorization + Cookie headers, replaces request bodies with a
+  size marker, and redacts any extra with "password" / "token" /
+  "secret" / "api_key" in its key name.
+- `/health` now probes DB + Redis. Returns ``status="ok"`` only when
+  DB is reachable AND Redis is either ``"ok"`` or explicitly
+  ``"disabled"`` (no ``REDIS_URL``). Orchestrators read the top-level
+  `status`; humans read `deps`.
+- Domain counters live in ``app.observability.metrics`` as module-
+  level globals. Callers in HTTP handlers increment directly — the
+  low-level security/billing modules stay dep-free so they can be
+  unit-tested without the metrics registry.
 
 ## Known quirks / gotchas
 

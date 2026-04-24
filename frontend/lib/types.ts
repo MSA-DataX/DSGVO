@@ -436,3 +436,94 @@ export interface ScanListItem {
   rating: RiskRating;
   created_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Async scan jobs (Phase 3 / 3b backend endpoints)
+// ---------------------------------------------------------------------------
+
+export type ScanJobStatusName = "queued" | "running" | "done" | "failed";
+
+export interface ScanJobCreated {
+  id: string;
+  status: ScanJobStatusName;
+  url: string;
+  created_at: string;
+}
+
+export interface ScanJobStatusResponse {
+  id: string;
+  status: ScanJobStatusName;
+  url: string;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+  result: ScanResponse | null;
+}
+
+// ---------------------------------------------------------------------------
+// Admin endpoints (Phase 4 — mirrors backend/app/routers/admin.py)
+// ---------------------------------------------------------------------------
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  display_name: string | null;
+  is_superuser: boolean;
+  created_at: string;
+}
+
+export interface AdminOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+  member_count: number;
+  scan_count: number;
+}
+
+export interface AdminAuditEntry {
+  id: string;
+  created_at: string;
+  actor_user_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  ip: string | null;
+  user_agent: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Billing endpoints (Phase 5a / 5b — mirrors backend/app/routers/billing.py)
+// ---------------------------------------------------------------------------
+
+export type SubscriptionStatus =
+  | "active"
+  | "past_due"
+  | "canceled"
+  | "no_subscription";
+
+export interface PlanView {
+  code: string;
+  name: string;
+  price_eur_cents: number;
+  monthly_scan_quota: number;   // 0 = unlimited
+  description: string;
+  is_free: boolean;
+  is_unlimited: boolean;
+}
+
+export interface SubscriptionView {
+  plan: PlanView;
+  status: SubscriptionStatus;
+  current_period_start: string;
+  scans_used: number;
+  scans_quota: number;          // 0 = unlimited
+  quota_remaining: number;      // negative once past allowance, -1 when unlimited
+}
+
+export interface CheckoutResponse {
+  checkout_url: string;
+}

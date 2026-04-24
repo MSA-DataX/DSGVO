@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authHeaderFromCookie, backendUrl } from "@/lib/serverAuth";
 
 export const runtime = "nodejs";
 
 async function proxy(method: "GET" | "DELETE", id: string) {
-  const backend = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
-  const upstream = await fetch(`${backend}/scans/${encodeURIComponent(id)}`, { method });
+  const upstream = await fetch(`${backendUrl()}/scans/${encodeURIComponent(id)}`, {
+    method,
+    headers: { ...authHeaderFromCookie() },
+  });
   const text = await upstream.text();
   return new NextResponse(text, {
     status: upstream.status,

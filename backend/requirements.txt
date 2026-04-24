@@ -13,6 +13,36 @@ tenacity==9.0.0
 aiosqlite==0.20.0
 dnspython==2.6.1
 
+# --- persistence (Phase 1.1: SaaS foundation) ---------------------------
+# SQLAlchemy 2.0 async + asyncpg for production Postgres; aiosqlite (above)
+# is reused as the SQLAlchemy driver for local dev / tests so the same
+# code path runs in both environments. Alembic owns schema migrations.
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# --- auth (Phase 1.2: users / organizations / memberships) --------------
+# bcrypt: password hashing with a sane cost factor.
+# PyJWT: signed session tokens (HS256). Keep it stateless at the API layer.
+# email-validator: pydantic EmailStr. Prevents garbage signups.
+bcrypt==4.0.1   # 4.2.x crashes with "DLL load failed" on some Windows + Py3.9 setups
+PyJWT==2.9.0
+email-validator==2.2.0
+# Form-body parsing — Mollie webhooks (Phase 5b) POST application/x-www-form-urlencoded.
+python-multipart==0.0.17
+
+# --- background jobs (Phase 3) ------------------------------------------
+# Arq is asyncio-native and leans on redis. Default deploy mode stays
+# "sync" (run_dev.py runs scans inline); to enable async mode start
+# `arq app.worker.WorkerSettings` in a separate process with REDIS_URL set.
+arq==0.26.1
+
+# --- observability (Phase 7) --------------------------------------------
+# sentry: opt-in via SENTRY_DSN env var; no-op without.
+# prometheus_client: text-format /metrics endpoint for scraping.
+sentry-sdk[fastapi]==2.18.0
+prometheus-client==0.21.0
+
 # --- test / dev ----------------------------------------------------------
 # Kept in the main requirements so a fresh venv + `pip install -r …` can
 # immediately run the suite. Split into a separate requirements-dev.txt
