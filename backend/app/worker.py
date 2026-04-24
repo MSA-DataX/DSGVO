@@ -28,11 +28,13 @@ import sys
 import time
 
 from arq.connections import RedisSettings
+from arq.cron import cron
 
 from app.config import settings
 from app.models import ScanRequest
 from app.progress import RedisProgressReporter
 from app.progress_bus import publish_progress
+from app.retention import run_retention_sweep
 from app.scanner import run_scan
 from app.storage import mark_done, mark_failed, mark_running
 
@@ -57,6 +59,17 @@ def _redis_settings() -> RedisSettings:
     """
     url = settings.redis_url or "redis://localhost:6379"
     return RedisSettings.from_dsn(url)
+
+
+async def retention_sweep_task(ctx: dict) -> dict:
+    """Daily cron — enforces docs/retention-policy.md. Returns a dict
+    so the Arq result log has useful counts if you go look."""
+    result = await run_retention_sweep()
+    return {
+        "scans_deleted":        result.scans_deleted,
+        "audit_deleted":        result.audit_deleted,
+        "orphan_scans_deleted": result.orphan_scans_deleted,
+    }
 
 
 async def run_scan_task(ctx: dict, scan_id: str, request_payload: dict) -> None:
@@ -103,7 +116,7 @@ async def run_scan_task(ctx: dict, scan_id: str, request_payload: dict) -> None:
 
 class WorkerSettings:
     """Arq entry point — `arq app.worker.WorkerSettings`."""
-    functions = [run_scan_task]
+    functions = [run_scan_task, retention_sweep_task]
     redis_settings = _redis_settings()
     # A scan can easily hit 60-90s with Playwright + AI; add headroom.
     job_timeout = 180
@@ -114,3 +127,16 @@ class WorkerSettings:
     # concurrent launches on a small VM will OOM. Scale horizontally by
     # running more worker processes, not by raising this.
     max_jobs = 1
+    # Daily retention sweep at 03:30 UTC. That's a low-traffic window
+    # globally and gives customer-visible cron noise a predictable
+    # boundary. Arq distributes cron across multiple worker processes:
+    # only ONE worker actually runs a given cron firing, even if you
+    # scale horizontally.
+    cron_jobs = [
+        cron(
+            retention_sweep_task,
+            name="retention-sweep",
+            hour={3}, minute={30},
+            run_at_startup=False,
+        ),
+    ]

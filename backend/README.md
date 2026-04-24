@@ -708,10 +708,10 @@ auth / SSRF / rate limits / runtime SSRF guards / Phase-3 async jobs /
 Phase-3b progress pub/sub + SSE / Phase-4 admin + audit / Phase-5a
 billing + quotas / Phase-5b Mollie checkout + webhook + cancel /
 Phase-7 observability (structured logs, request-id, /metrics,
-extended /health, counter ticks) with 294 unit + integration tests.
-All tests are pure-Python (no Playwright, no network, no real DNS,
-no real Redis, no real Mollie, no real Sentry) and complete in under
-twenty-two seconds.
+extended /health, counter ticks) / Phase-7c security.txt with 303
+unit + integration tests. All tests are pure-Python (no Playwright,
+no network, no real DNS, no real Redis, no real Mollie, no real
+Sentry) and complete in under twenty-two seconds.
 
 ```powershell
 # Inside the backend venv

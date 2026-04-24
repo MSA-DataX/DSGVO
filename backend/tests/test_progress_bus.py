@@ -245,9 +245,11 @@ def _fake_result() -> ScanResponse:
 @pytest_asyncio.fixture
 async def app_with_db(monkeypatch):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from app.db import install_sqlite_fk_pragma
     from app.security.rate_limit import auth_rate_limiter, scan_rate_limiter
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    install_sqlite_fk_pragma(engine)
     SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(db_module, "_engine", engine)
     monkeypatch.setattr(db_module, "_SessionLocal", SessionLocal)

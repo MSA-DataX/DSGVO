@@ -34,12 +34,14 @@ async def app_with_db(monkeypatch):
     cross-contaminate via a shared per-minute budget.
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from app.db import install_sqlite_fk_pragma
     from app.security.rate_limit import auth_rate_limiter, scan_rate_limiter
 
     # File-less SQLite per test → no leakage between tests, no on-disk
     # artefacts. `uri=true` + `cache=shared` lets multiple connections see
     # the same in-memory DB within one engine.
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    install_sqlite_fk_pragma(engine)
     SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
     monkeypatch.setattr(db_module, "_engine", engine)

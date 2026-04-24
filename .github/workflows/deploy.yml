@@ -1,0 +1,100 @@
+name: Deploy
+
+# Manual-only — no auto-deploy on push. Production is one VM, one
+# docker-compose stack; a human picks the image version + window.
+#
+# Runs over SSH: pins APP_VERSION in the remote .env, pulls the
+# matching images from GHCR, restarts the stack, prunes the olds.
+# Rollback is the same workflow with an older tag typed in.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_SSH_KEY   OpenSSH private key matching a key on the target host
+#   DEPLOY_HOST      user@host  (e.g. deploy@scanner.example.com)
+#   DEPLOY_PATH      absolute path of the checked-out repo on the host
+#
+# Optional:
+#   DEPLOY_PORT      SSH port, default 22
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Image tag to deploy — use the 12-char git SHA printed in the
+          CI workflow output, or "latest" to take whatever main built.
+          Default: latest.
+        required: false
+        default: latest
+
+concurrency:
+  # Only one deploy at a time, ever. Queue up; don't interleave.
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ssh deploy
+    runs-on: ubuntu-latest
+    environment: production   # enable required reviewers in the repo
+                              # settings to gate deploys behind an
+                              # approval button.
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.version }}"
+          if [[ -z "$TAG" ]]; then TAG="latest"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ""          # baked into DEPLOY_HOST (user@host form)
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          # Fail fast on any error — don't leave the stack half-updated.
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+
+            # Pin the target tag so subsequent docker compose reads
+            # this version, not whatever .env said before.
+            sed -i "s/^APP_VERSION=.*/APP_VERSION=${{ steps.tag.outputs.tag }}/" .env || echo "APP_VERSION=${{ steps.tag.outputs.tag }}" >> .env
+
+            # Pull is a separate step from `up` so a bad image name
+            # fails before we've torn the old containers down.
+            docker compose -f docker-compose.prod.yml pull backend worker frontend
+
+            # `up -d` recreates only services whose config / image changed.
+            # Migrations run automatically in the backend container's
+            # entrypoint before uvicorn starts.
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Health gate: wait for backend to report ok before
+            # considering the deploy successful.
+            for i in $(seq 1 30); do
+              if docker compose -f docker-compose.prod.yml exec -T backend \
+                  curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+                echo "backend healthy"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "backend did not go healthy within 60s; rolling logs:"
+            docker compose -f docker-compose.prod.yml logs --tail=100 backend
+            exit 1
+
+      - name: Prune dangling images
+        # Keep disk tidy without blowing away caches we might want
+        # for a fast rollback (they're tagged, not dangling).
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ""
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            docker image prune -f

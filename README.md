@@ -200,14 +200,155 @@ docker compose -f docker-compose.prod.yml exec -T postgres \
 config in the Mollie dashboard — the backend passes it into every
 payment-create call.
 
-**Container registry (optional).** For faster deploys across multiple
-hosts: tag and push images to GHCR / ECR / Scaleway Container
-Registry, then replace `build:` with `image:` in the compose file.
-That swap is intentionally **not** done here so `git clone && docker
-compose up` keeps working as the zero-infrastructure path.
+**Container registry (Phase 7b).** CI builds images automatically on
+every push to `main` and pushes them to GitHub Container Registry as
+`ghcr.io/<owner>/<repo>-{backend,frontend}:<tag>`. Tags:
+
+- `latest` — the moving pointer (last green main build)
+- `<sha>` — 12-char git SHA (deterministic rollback target)
+
+Compose already has the `image:` pointer wired in. On the server:
+
+```bash
+# .env — point at your registry + pin a version
+IMAGE_REGISTRY=ghcr.io/your-org/your-repo
+APP_VERSION=abc123def456    # SHA from the CI run
+
+# Pull and restart
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The same compose file still supports `docker compose up --build` for
+local dev (build is the fallback when the remote image isn't
+available). No separate prod/dev compose files.
+
+## CI/CD pipeline (Phase 7b)
+
+Two GitHub Actions workflows:
+
+| File | Trigger | What it does |
+|---|---|---|
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | Every push + PR to `main` | Backend pytest (294 tests), frontend lint + typecheck. On `main` only: build + push Docker images to GHCR with GHA layer cache. |
+| [.github/workflows/deploy.yml](.github/workflows/deploy.yml) | Manual (workflow_dispatch) | SSH to the server, pin `APP_VERSION` in `.env`, pull, `up -d`, wait for `/health`, prune dangling images. |
+
+**Why deploy is manual, not on-push.** Production is one VM, one
+compose stack, one operator. Auto-deploy on main is a nice-to-have
+that bites you the first time main is green but the change needs a
+manual migration step or a feature-flag toggle. Explicit button-click
+with image SHA in the form is the lowest-regret default.
+
+**Repo secrets required** (Settings → Secrets and variables → Actions):
+
+| Name | Used by | Example |
+|---|---|---|
+| `GITHUB_TOKEN` | ci.yml | auto-provided; no action needed |
+| `DEPLOY_SSH_KEY` | deploy.yml | private key (full file contents, not path) |
+| `DEPLOY_HOST` | deploy.yml | `deploy@scanner.example.com` |
+| `DEPLOY_PATH` | deploy.yml | `/opt/dsgvo-scanner` |
+| `DEPLOY_PORT` | deploy.yml (optional) | `22` |
+
+**Repo variables** (optional — used at image build time):
+
+| Name | Used by | Example |
+|---|---|---|
+| `NEXT_PUBLIC_BACKEND_URL` | ci.yml frontend build | `https://scanner.example.com` |
+| `NEXT_PUBLIC_SCAN_MODE` | ci.yml frontend build | `async` |
+
+**Deploying:**
+
+1. Land a PR on `main`. CI runs tests + pushes the new images.
+2. Open the Deploy workflow in GitHub Actions → Actions tab → Deploy.
+3. Click "Run workflow" → enter the image tag (either `latest` or a
+   specific 12-char SHA from the CI run) → confirm.
+4. The SSH job waits for `/health` to report `ok` before it exits —
+   green = users are on the new build.
+
+**Rolling back:**
+
+Same workflow, type an older SHA. Image is still in GHCR (GHCR keeps
+tags forever unless you prune manually). The server only has to
+`pull + up -d`; the new containers start against the old image in
+seconds.
+
+**One-time server setup** (before the first deploy):
+
+```bash
+ssh root@scanner.example.com
+adduser --disabled-password --gecos "" deploy
+usermod -aG docker deploy
+su - deploy
+
+# Clone for the static files (compose + Caddyfile live in git)
+git clone https://github.com/you/dsgvo-scanner.git /opt/dsgvo-scanner
+cd /opt/dsgvo-scanner
+cp .env.production.example .env
+nano .env   # fill in secrets + IMAGE_REGISTRY
+
+# Add the deploy user's public key to ~/.ssh/authorized_keys so the
+# workflow can SSH in. Private key goes to the DEPLOY_SSH_KEY secret.
+
+# Log into GHCR once so subsequent pulls work unattended. Use a
+# Classic PAT with `read:packages` scope for private repos; public
+# repos need no login at all.
+echo $GHCR_TOKEN | docker login ghcr.io -u <your-github-user> --password-stdin
+
+# First boot — local build to get the stack running BEFORE CI has
+# populated the registry. After this, deploys come from GHCR.
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+From then on, every release is a click in the Actions tab.
 
 **What's NOT here (Phase 7 candidates).** Multi-host with an external
 load balancer. Postgres streaming replication. Centralised logging
 (Loki / Grafana Cloud). Prometheus metrics endpoint + dashboards.
 Sentry error reporting. All of these are straight additions — the
 compose file is the seam.
+
+## Compliance (Phase 7c)
+
+A scanner product needs to be exemplary about its own data handling —
+otherwise the sales conversation is over in the first procurement
+email. What's shipped:
+
+| Artefact | Location | When to touch it |
+|---|---|---|
+| `/.well-known/security.txt` | Served by backend; configured via `SECURITY_*` env vars | Rotate `SECURITY_TXT_EXPIRES` annually |
+| Incident response runbook | [docs/incident-response.md](docs/incident-response.md) | Before every on-call shift; drill yearly |
+| Data Processing Agreement template | [docs/dpa-template.md](docs/dpa-template.md) | Fill in `<PLACEHOLDERS>` per customer; have legal review before sending |
+| Data retention policy | [docs/retention-policy.md](docs/retention-policy.md) | Review annually; update when a new data class is added |
+| Backup script | [deploy/backup.sh](deploy/backup.sh) | Install via cron (`0 3 * * *`); `BACKUP_GPG_RECIPIENT` for off-site storage |
+| Audit log | `audit_logs` table, `GET /admin/audit` | Keep the 3-year retention default unless legal tells you otherwise |
+
+**What this gets you:**
+
+- Standard DSGVO Art. 28 DPA to send prospects who ask (every B2B
+  DACH lead will ask, sooner rather than later).
+- A documented 72-hour breach-notification plan that actually
+  survives contact with an incident.
+- Retention numbers for every data class the system stores — the
+  first thing a SOC 2 auditor asks.
+- RFC 9116 security.txt so vulnerability researchers know where to
+  send a report, not where to post one publicly.
+
+**What this does NOT get you:**
+
+- SOC 2 Type II certification. That's a 6-month audit with a firm
+  like Drata / Vanta driving it. These artefacts are 80% of the
+  prep work; the remaining 20% is evidence collection over the
+  observation period.
+- ISO 27001. Same story — this is the narrative, not the audit.
+
+**Set before going live:**
+
+```bash
+# backend/.env (production)
+SECURITY_CONTACT_EMAIL=security@your-company.com
+SECURITY_POLICY_URL=https://your-company.com/security
+SECURITY_TXT_EXPIRES=2027-01-01T00:00:00Z    # rotate before then
+
+# Backup cron (on the production host)
+echo '0 3 * * * deploy /opt/dsgvo-scanner/deploy/backup.sh >> /var/log/scanner-backup.log 2>&1' \
+  | sudo tee /etc/cron.d/scanner-backup
+```

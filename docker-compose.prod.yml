@@ -52,6 +52,13 @@ services:
       retries: 10
 
   backend:
+    # Deploy mode (CI-built): `docker compose pull` fetches this tag from
+    # GHCR. Set IMAGE_REGISTRY + APP_VERSION in .env to pin a specific
+    # release; rollback = change APP_VERSION + re-pull.
+    # Local mode: `docker compose up --build` rebuilds from ./backend
+    # because the image name won't exist locally — `build:` is the
+    # fallback. See README for the switch.
+    image: ${IMAGE_REGISTRY:-ghcr.io/you/dsgvo-scanner}-backend:${APP_VERSION:-latest}
     build:
       context: ./backend
     restart: unless-stopped
@@ -82,6 +89,11 @@ services:
       APP_VERSION: ${APP_VERSION:-dev}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+      # Compliance / security.txt (Phase 7c).
+      SECURITY_CONTACT_EMAIL: ${SECURITY_CONTACT_EMAIL:-security@example.com}
+      SECURITY_POLICY_URL: ${SECURITY_POLICY_URL:-}
+      SECURITY_TXT_EXPIRES: ${SECURITY_TXT_EXPIRES:-}
+      SECURITY_ACKNOWLEDGMENTS_URL: ${SECURITY_ACKNOWLEDGMENTS_URL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,6 +115,9 @@ services:
           memory: 1500M
 
   worker:
+    # Same image as backend — only the command differs. Keeps migrations,
+    # audit logging, scanner code bit-identical between HTTP and job paths.
+    image: ${IMAGE_REGISTRY:-ghcr.io/you/dsgvo-scanner}-backend:${APP_VERSION:-latest}
     build:
       context: ./backend
     restart: unless-stopped
@@ -144,6 +159,7 @@ services:
           memory: 1500M
 
   frontend:
+    image: ${IMAGE_REGISTRY:-ghcr.io/you/dsgvo-scanner}-frontend:${APP_VERSION:-latest}
     build:
       context: ./frontend
       args:

@@ -94,8 +94,16 @@ Currently a single-node dev tool, not yet a multi-tenant SaaS. See the
 │   ├── Dockerfile              Production image — multi-stage, Next.js standalone output
 │   └── .env.local.example
 ├── deploy/
-│   └── Caddyfile               Production reverse proxy (Phase 6) — auto-TLS, sec headers
-├── docker-compose.prod.yml     Full production stack (Phase 6)
+│   ├── Caddyfile               Production reverse proxy (Phase 6) — auto-TLS, sec headers
+│   └── backup.sh               pg_dump rotation + optional GPG encrypt (Phase 7c)
+├── docs/
+│   ├── incident-response.md    On-call runbook + DSGVO Art. 33 72h timeline (Phase 7c)
+│   ├── dpa-template.md         Art. 28 GDPR DPA template for customers (Phase 7c)
+│   └── retention-policy.md     Per-data-class retention numbers (Phase 7c)
+├── .github/workflows/
+│   ├── ci.yml                  Tests + (on main) build + push to GHCR (Phase 7b)
+│   └── deploy.yml              Manual SSH deploy — pin APP_VERSION, pull, up -d, health gate
+├── docker-compose.prod.yml     Full production stack with pull-or-build image pointers
 └── .env.production.example     Template for production .env
 └── README.md
 ```
@@ -451,6 +459,54 @@ else → `backend/.env`.
   level globals. Callers in HTTP handlers increment directly — the
   low-level security/billing modules stay dep-free so they can be
   unit-tested without the metrics registry.
+
+**23. CI builds + pushes images on main; deploy is manual.**
+- `.github/workflows/ci.yml` runs pytest + frontend lint/typecheck on
+  every push + PR. On `main` only, it also builds `backend` and
+  `frontend` images via `docker/build-push-action@v6` with GHA layer
+  cache + matrix parallelism, and pushes to GHCR with two tags:
+  `latest` (moving pointer) and the 12-char SHA (deterministic
+  rollback anchor).
+- `.github/workflows/deploy.yml` is `workflow_dispatch` only. It
+  SSHes to the production VM (secrets: `DEPLOY_SSH_KEY`,
+  `DEPLOY_HOST`, `DEPLOY_PATH`), overwrites the `APP_VERSION=` line
+  in the server's `.env`, runs `docker compose pull && up -d`, then
+  waits for `/health` to go green before exiting. `concurrency:
+  group: deploy-prod, cancel-in-progress: false` means overlapping
+  deploys queue instead of racing.
+- No auto-deploy on push. Explicit button-click with a version input
+  is the lowest-regret default — prevents a green-main + manual-
+  migration combo from being deployed accidentally.
+- `docker-compose.prod.yml` uses `image: ${IMAGE_REGISTRY}-backend:${APP_VERSION}`
+  with `build:` as fallback. Server deploys pull; dev still works with
+  `docker compose up --build`. One file, two modes.
+- Rollback = same deploy workflow, older SHA typed in the input.
+  Images stay in GHCR indefinitely unless someone prunes them.
+
+**24. Compliance artefacts are shipped in the repo, not generated.**
+- `/.well-known/security.txt` is served from the backend router
+  `app/routers/well_known.py`, NOT as a static file from Caddy. It
+  reads `SECURITY_CONTACT_EMAIL` + `SECURITY_POLICY_URL` +
+  `SECURITY_TXT_EXPIRES` + `SECURITY_ACKNOWLEDGMENTS_URL` + the
+  shared `APP_BASE_URL`. Default-fallback Expires is boot + 365d so
+  the file stays RFC 9116-valid even when the operator forgets.
+- DPA, incident runbook, retention policy all live in
+  [docs/](docs/) in Markdown — versioned with the code. Any customer
+  asking for a DPA gets the current `main` revision filled in with
+  their deal-specific placeholders. Legal review still required
+  before signature.
+- `deploy/backup.sh` is the one-true backup path. `docker compose
+  exec postgres pg_dump` on an ad-hoc basis is fine for an incident
+  evidence grab; nightly cron must call the script so rotation +
+  optional GPG run consistently.
+- Retention numbers in `docs/retention-policy.md` are AUTHORITATIVE —
+  scan rows 12 months, audit log 3 years, DB backups 30 daily + 12
+  monthly. When a new data class is added, update that file AND
+  implement the enforcement (Phase 8 work for automatic pruning).
+- Nothing in this convention produces a SOC 2 certificate — that's
+  a 6-month audit with a vendor like Drata. These artefacts are the
+  80% of evidence the auditor asks for; the remaining 20% is log
+  preservation over the observation period.
 
 ## Known quirks / gotchas
 

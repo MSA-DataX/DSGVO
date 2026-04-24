@@ -9,14 +9,16 @@ still valid after a reload).
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import and_, delete, func, select
 
+from app.audit import log_action
 from app.auth import (
     AuthedUser,
     create_access_token,
@@ -24,10 +26,15 @@ from app.auth import (
     hash_password,
     verify_password,
 )
+from app.billing.checkout import cancel_org_subscription
+from app.billing.mollie import MollieError
 from app.db import session_scope
 from app.db_models import Membership, Organization, User
 from app.observability import metrics as obs_metrics
 from app.security.rate_limit import auth_rate_limiter, client_ip
+
+
+log = logging.getLogger("auth.router")
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -117,6 +124,10 @@ async def signup(req: SignupRequest, request: Request) -> TokenResponse:
         session.add(Organization(
             id=org_id, name=org_name, slug=_slug_from_name(org_name), created_at=now,
         ))
+        # Flush so the FKs referenced below resolve to existing rows.
+        # Without declared relationships(), SA's unit-of-work can't
+        # topo-sort these — so we sort by hand.
+        await session.flush()
         session.add(Membership(
             id=membership_id, user_id=user_id, organization_id=org_id,
             role="owner", created_at=now,
@@ -160,4 +171,135 @@ async def me(current: AuthedUser = Depends(get_current_user)) -> MeResponse:
     return MeResponse(
         id=current.id, email=current.email,
         display_name=current.display_name, is_superuser=current.is_superuser,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /auth/me — Phase 8, GDPR Art. 17 right to erasure
+# ---------------------------------------------------------------------------
+
+class AccountDeletionResponse(BaseModel):
+    """Response shape for a successful self-deletion so the frontend
+    can tell the user what else we took down with them."""
+    status: str                          # "deleted"
+    deleted_user_id: str
+    deleted_organization_ids: list[str]
+    mollie_subscriptions_canceled: int
+
+
+async def _find_sole_owner_org_ids(user_id: str) -> list[str]:
+    """Return org ids where ``user_id`` is the sole ``role="owner"``.
+
+    Orgs with co-owners stay intact — the user's membership row is
+    removed on cascade, but the org (scans, subscription, other
+    members) is not their data to erase.
+    """
+    async with session_scope() as session:
+        # Subquery: orgs the user owns.
+        my_owner_orgs = (await session.execute(
+            select(Membership.organization_id).where(and_(
+                Membership.user_id == user_id,
+                Membership.role == "owner",
+            ))
+        )).scalars().all()
+
+        sole: list[str] = []
+        for org_id in my_owner_orgs:
+            owner_count = (await session.execute(
+                select(func.count()).select_from(Membership).where(and_(
+                    Membership.organization_id == org_id,
+                    Membership.role == "owner",
+                ))
+            )).scalar_one()
+            if owner_count == 1:
+                sole.append(org_id)
+        return sole
+
+
+@router.delete("/me", response_model=AccountDeletionResponse)
+async def delete_my_account(
+    request: Request,
+    current: AuthedUser = Depends(get_current_user),
+) -> AccountDeletionResponse:
+    """GDPR Art. 17 — right to erasure.
+
+    Deletion cascade:
+
+      1. For every organization the user is the SOLE owner of:
+           a. cancel the Mollie subscription if one exists
+              (best-effort — failure is logged, deletion proceeds so
+              the user's right can't be blocked by a billing API
+              outage);
+           b. delete the organization row → SQLAlchemy cascades drop
+              its memberships, scans, and subscription.
+      2. For every other organization the user is a member of: their
+         membership row is deleted, the org continues.
+      3. The user row itself is deleted. ``audit_logs.actor_user_id``
+         has ``ON DELETE SET NULL`` — audit rows survive with the
+         denormalised ``actor_email`` intact, which is what both GDPR
+         traceability and SOC 2 require.
+      4. One final audit entry ``user.self_delete`` is written so the
+         deletion event itself is traceable.
+
+    The caller's JWT stays cryptographically valid until its TTL
+    expires — the frontend is expected to call ``/api/auth/logout``
+    immediately after this endpoint returns so the browser stops
+    sending the now-orphaned token. ``get_current_user`` will return
+    401 on any subsequent request anyway because the user row is gone.
+    """
+    user_id = current.id
+    user_email = current.email
+
+    sole_owner_org_ids = await _find_sole_owner_org_ids(user_id)
+
+    # --- Cancel Mollie subscriptions for orgs that are about to vanish --
+    canceled = 0
+    for org_id in sole_owner_org_ids:
+        try:
+            await cancel_org_subscription(org_id)
+            canceled += 1
+        except (RuntimeError, MollieError) as e:
+            # RuntimeError: MOLLIE_API_KEY not configured → billing was
+            # in admin-assigned-plans mode; nothing to cancel.
+            # MollieError: API call failed → log, proceed. Billing
+            # support can refund manually.
+            log.warning(
+                "mollie cancel failed for org %s during self-delete: %s", org_id, e,
+            )
+
+    # --- Write the audit entry BEFORE the delete so session scope order
+    #     is predictable (audit + user rows in the same visibility window).
+    await log_action(
+        action="user.self_delete",
+        actor=current,
+        target_type="user",
+        target_id=user_id,
+        details={
+            "email": user_email,
+            "sole_owner_org_ids": sole_owner_org_ids,
+            "mollie_cancellations_attempted": len(sole_owner_org_ids),
+            "mollie_cancellations_successful": canceled,
+        },
+        request=request,
+    )
+
+    # --- Delete cascade -----------------------------------------------
+    async with session_scope() as session:
+        # Orgs first — their cascade handles memberships + scans + subscription.
+        for org_id in sole_owner_org_ids:
+            await session.execute(
+                delete(Organization).where(Organization.id == org_id)
+            )
+        # Then the user — FK cascade removes remaining memberships.
+        await session.execute(delete(User).where(User.id == user_id))
+
+    log.info(
+        "self-delete complete: user=%s orgs_removed=%d mollie_canceled=%d",
+        user_id, len(sole_owner_org_ids), canceled,
+    )
+    return AccountDeletionResponse(
+        status="deleted",
+        deleted_user_id=user_id,
+        deleted_organization_ids=sole_owner_org_ids,
+        mollie_subscriptions_canceled=canceled,
     )

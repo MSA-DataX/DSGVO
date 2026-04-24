@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     sentry_dsn: str | None = None
     sentry_traces_sample_rate: float = 0.0
 
+    # Compliance (Phase 7c). All optional. The /.well-known/security.txt
+    # endpoint reads these to produce an RFC 9116 file. Dev defaults say
+    # "example.com" so you can see the endpoint work; production MUST
+    # override at least SECURITY_CONTACT_EMAIL and SECURITY_TXT_EXPIRES.
+    security_contact_email: str = "security@example.com"
+    security_policy_url: str | None = None          # e.g. https://example.com/security
+    security_txt_expires: str | None = None         # ISO-8601; rotate yearly
+    security_acknowledgments_url: str | None = None
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

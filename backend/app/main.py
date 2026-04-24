@@ -40,6 +40,7 @@ from app.progress import ProgressReporter
 from app.routers import admin as admin_router
 from app.routers import auth as auth_router
 from app.routers import billing as billing_router
+from app.routers import well_known as well_known_router
 from app.scanner import run_scan
 from app.security.rate_limit import scan_rate_limiter
 from app.security.ssrf import SsrfError, validate_url_safe
@@ -138,6 +139,7 @@ async def observability_middleware(request: Request, call_next):
 app.include_router(auth_router.router)
 app.include_router(admin_router.router)
 app.include_router(billing_router.router)
+app.include_router(well_known_router.router)
 
 
 # ---------------------------------------------------------------------------
