@@ -56,6 +56,17 @@ export function FormsSection({ report }: { report: FormReport }) {
                     <Badge className={`text-[10px] uppercase ${PURPOSE_STYLE[f.purpose]}`}>
                       {t(`forms.purpose.${f.purpose}`)}
                     </Badge>
+                    {f.has_pre_checked_consent && (
+                      // Phase 9f: Planet49 badge — surfaces the violation on
+                      // the collapsed row so the auditor doesn't have to
+                      // expand every form to find it.
+                      <Badge
+                        className="text-[10px] uppercase bg-risk-high/15 text-risk-high"
+                        title={t("forms.planet49.tooltip")}
+                      >
+                        {t("forms.planet49.badge")}
+                      </Badge>
+                    )}
                     <span className="truncate text-sm">{f.page_url}</span>
                   </div>
                   <div className="flex items-center gap-2">

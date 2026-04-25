@@ -104,6 +104,70 @@ def _registered_domain(url: str) -> str:
     return f"{ext.domain}.{ext.suffix}" if ext.suffix else ext.domain
 
 
+# Tracking-pixel detection (Phase 9c).
+#
+# A "pixel" / "web beacon" is a near-zero-byte image (usually 1×1 GIF
+# or PNG) loaded from a marketing endpoint to fire a server-side
+# tracking event. Different vendors call it different things — Meta's
+# is the "Pixel" at /tr, Google Analytics legacy is /__utm.gif, others
+# expose /pixel /beacon /conversion. Loading any of them BEFORE the
+# user consents is the textbook § 25 TDDDG / ePrivacy violation.
+#
+# Detection rules (intentionally conservative — false positives waste
+# auditor time on non-issues):
+#
+#   1. Meta-specific: registered_domain == facebook.com AND path starts
+#      with "/tr" — this is the canonical Meta Pixel call.
+#   2. GA legacy: path ends with "__utm.gif".
+#   3. Generic pattern: image resource on a third-party host whose path
+#      contains one of a small set of pixel/beacon tokens.
+#
+# Rule 3 is intentionally narrow ("/pixel" not "pixel" anywhere) so a
+# legit gallery image at /pixelart/banner.gif doesn't trip.
+_PIXEL_GENERIC_PATH_TOKENS: tuple[str, ...] = (
+    "/pixel",
+    "/beacon",
+    "/conversion",
+    "/__utm.gif",
+    "/1x1.gif",
+    "/clear.gif",
+    "/blank.gif",
+    "/spacer.gif",
+)
+
+
+def is_tracking_pixel(
+    *,
+    url: str,
+    resource_type: str | None,
+    registered_domain: str,
+    is_third_party: bool,
+) -> bool:
+    """True iff this request looks like a marketing pixel beacon.
+
+    Pure function — accepts only what the caller can derive without
+    waiting on the response, so we can classify at request-emit time
+    without polluting the hot path with awaits.
+    """
+    if not is_third_party:
+        return False
+    path = (urlparse(url).path or "").lower()
+
+    # Rule 1: Meta Pixel — registered domain must match exactly. Don't
+    # match facebook.com/anything-with-/tr-substring; the path test
+    # has to start with /tr.
+    if registered_domain == "facebook.com" and (path == "/tr" or path.startswith("/tr/")):
+        return True
+
+    # Rule 2 + 3: image resource hitting a recognisable beacon path.
+    # `resource_type == "image"` filters out script + stylesheet hits
+    # that share marketing hosts (e.g. fbevents.js).
+    if (resource_type or "").lower() != "image":
+        return False
+
+    return any(token in path for token in _PIXEL_GENERIC_PATH_TOKENS)
+
+
 def _classify_domain(registered: str) -> tuple[Region, tuple[str, ...]]:
     if registered in _KNOWN_TRACKERS:
         return _KNOWN_TRACKERS[registered]
@@ -152,6 +216,7 @@ class NetworkAnalyzer:
         if not registered:
             return
         self._counter += 1
+        is_third_party = registered != self.first_party_domain
         self._records[id(request)] = NetworkRequest(
             url=request.url,
             domain=domain,
@@ -160,7 +225,13 @@ class NetworkAnalyzer:
             resource_type=request.resource_type,
             status=None,
             initiator_page=(request.frame.url if request.frame else ""),
-            is_third_party=registered != self.first_party_domain,
+            is_third_party=is_third_party,
+            is_tracking_pixel=is_tracking_pixel(
+                url=request.url,
+                resource_type=request.resource_type,
+                registered_domain=registered,
+                is_third_party=is_third_party,
+            ),
         )
 
     def _on_response(self, response: Response) -> None:

@@ -255,15 +255,24 @@ class Crawler:
         for f in soup.find_all("form"):
             fields: list[FormField] = []
             has_checkbox = False
+            has_pre_checked_box = False
             for el in f.find_all(["input", "textarea", "select"]):
                 el_type = (el.get("type") or el.name or "").lower()
+                # Phase 9: HTML boolean attribute. `<input type="checkbox"
+                # checked>` and `<input type="checkbox" checked="checked">`
+                # both make has_attr("checked") True; missing attribute
+                # → False. Same semantics as the browser parser.
+                pre_checked = (el_type == "checkbox") and el.has_attr("checked")
                 if el_type == "checkbox":
                     has_checkbox = True
+                if pre_checked:
+                    has_pre_checked_box = True
                 fields.append(
                     FormField(
                         name=el.get("name"),
                         type=el_type or None,
                         required=el.has_attr("required"),
+                        is_pre_checked=pre_checked,
                     )
                 )
 
@@ -288,6 +297,7 @@ class Crawler:
                     text_content=text_content,
                     links=links,
                     has_checkbox=has_checkbox,
+                    has_pre_checked_box=has_pre_checked_box,
                 )
             )
         return forms

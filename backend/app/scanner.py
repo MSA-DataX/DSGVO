@@ -403,6 +403,11 @@ async def run_scan(
         channels=contact_channels, imprint_url=imprint_url,
         widgets=widgets, lang=req.ui_language,
     )
+    # Phase 9d: deterministic DSAR check on the raw policy text.
+    # Independent of AI provider — runs against `none` mode too.
+    if pre.policy_text:
+        from app.modules.dsar_detector import detect_dsar
+        privacy_analysis.dsar = detect_dsar(pre.policy_text)
 
     # --- form analysis (deterministic) ----------------------------------
     p.emit("form_analysis", "Analyzing forms…")

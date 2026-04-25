@@ -158,6 +158,7 @@ def make_form(
     page_url: str = "https://example.com/contact",
     fields: list[FormField] | None = None,
     has_checkbox: bool = False,
+    has_pre_checked_box: bool = False,
     text_content: str = "",
     links: list[str] | None = None,
 ) -> FormInfo:
@@ -165,14 +166,21 @@ def make_form(
         action=action, method=method, fields=fields or [],
         page_url=page_url, text_content=text_content,
         links=links or [], has_checkbox=has_checkbox,
+        has_pre_checked_box=has_pre_checked_box,
     )
 
 
-def make_field(name: str, type_: str = "text", required: bool = False) -> FormField:
+def make_field(
+    name: str, type_: str = "text", required: bool = False,
+    *, is_pre_checked: bool = False,
+) -> FormField:
     # `type` is a keyword in Python but not a reserved word in kwargs; we
     # still prefer `type_` on the helper so callers don't shadow the
     # built-in and get nasty surprises.
-    return FormField(name=name, type=type_, required=required)
+    return FormField(
+        name=name, type=type_, required=required,
+        is_pre_checked=is_pre_checked,
+    )
 
 
 def make_page(

@@ -288,6 +288,7 @@ def _compute_caps(
     consent: ConsentSimulation | None,
     security: SecurityAudit | None,
     libs: VulnerableLibrariesReport | None = None,
+    forms: FormReport | None = None,
 ) -> list[HardCap]:
     caps: list[HardCap] = []
     has_cmp = _has_consent_cmp(cookies)
@@ -540,6 +541,53 @@ def _compute_caps(
                 cap_value=75,
             ))
 
+    # --- Phase 9d: policy missing user-rights enumeration -----------
+    # Art. 13(2)(b) DSGVO obliges the controller to inform data
+    # subjects about the existence of their rights. The deterministic
+    # DSAR check matches German + English vocabulary against the raw
+    # policy text — independent of AI availability. We fire the cap
+    # ONLY when:
+    #   (a) a policy WAS found (no_privacy_policy covers the absent case), AND
+    #   (b) the deterministic check ran (privacy.dsar is not None) AND
+    #       found zero of the eight canonical rights.
+    # Severity matches `no_legal_basis_stated` (55) — same article
+    # (Art. 13), same regulator finding pattern.
+    if (
+        has_policy
+        and privacy.dsar is not None
+        and len(privacy.dsar.named_rights) == 0
+    ):
+        caps.append(HardCap(
+            code="policy_missing_user_rights",
+            description=(
+                "The privacy policy does not enumerate any of the GDPR data-"
+                "subject rights (access, rectification, erasure, restriction, "
+                "portability, objection, complaint, withdraw consent). "
+                "Art. 13(2)(b) DSGVO requires this information to be provided "
+                "to the data subject."
+            ),
+            cap_value=55,
+        ))
+
+    # --- Phase 9: pre-checked consent box (Planet49 / Art. 7(2) DSGVO) ---
+    # Settled CJEU case law since 2019. The detection in form_analyzer
+    # is conservative (requires consent vocabulary near a pre-ticked
+    # checkbox) so a hit is high-signal. Cap at 40 — same severity tier
+    # as us_marketing_no_consent: a clear black-letter violation.
+    if forms is not None:
+        n_pre_checked = forms.summary.get("forms_with_pre_checked_consent", 0)
+        if n_pre_checked > 0:
+            caps.append(HardCap(
+                code="pre_checked_consent_box",
+                description=(
+                    f"{n_pre_checked} form(s) ship with a pre-ticked consent "
+                    f"checkbox. EuGH Planet49 (C-673/17, 2019) + Art. 7(2) "
+                    f"DSGVO: pre-ticked is NOT valid consent. The user must "
+                    f"affirmatively tick the box."
+                ),
+                cap_value=40,
+            ))
+
     return caps
 
 
@@ -664,6 +712,79 @@ def _build_recommendations(
                 "Die Policy muss die Rechtsgrundlage (Einwilligung, Vertrag, berechtigtes Interesse usw.) "
                 "für jede Verarbeitungskategorie benennen. Pro Verarbeitungszweck aufführen."),
             related=["no_legal_basis_stated"],
+        ))
+
+    # --- Phase 9d: enumerate user rights (Art. 13(2)(b)) ---------------
+    if "policy_missing_user_rights" in cap_codes:
+        recs.append(Recommendation(
+            priority="high",
+            title=_t(lang,
+                "Enumerate the data-subject rights in the policy (Art. 13(2)(b) DSGVO)",
+                "Betroffenenrechte in der Datenschutzerklärung benennen (Art. 13 Abs. 2 lit. b DSGVO)"),
+            detail=_t(lang,
+                "The deterministic DSAR check found NONE of the eight canonical "
+                "GDPR rights named in the policy (access / rectification / erasure / "
+                "restriction / portability / objection / complaint / withdraw consent). "
+                "Art. 13(2)(b) DSGVO requires the controller to inform data subjects "
+                "about each right + how to exercise it + the right to lodge a complaint "
+                "with a supervisory authority. Add a clearly labelled \"Your rights\" "
+                "section. The DSK template at "
+                "https://www.datenschutzkonferenz-online.de is a defensible starting "
+                "point if your legal team doesn't have its own boilerplate.",
+                "Die deterministische DSAR-Prüfung fand KEINES der acht kanonischen "
+                "DSGVO-Rechte in der Policy (Auskunft / Berichtigung / Löschung / "
+                "Einschränkung / Datenübertragbarkeit / Widerspruch / Beschwerde / "
+                "Widerruf der Einwilligung). Art. 13 Abs. 2 lit. b DSGVO verpflichtet "
+                "den Verantwortlichen, die betroffene Person über jedes Recht + dessen "
+                "Ausübung + das Beschwerderecht bei einer Aufsichtsbehörde zu "
+                "informieren. Einen klar bezeichneten \"Ihre Rechte\"-Abschnitt "
+                "hinzufügen. Die DSK-Mustertexte unter "
+                "https://www.datenschutzkonferenz-online.de sind ein verteidigungs-"
+                "fähiger Ausgangspunkt, falls die Rechtsabteilung keinen eigenen "
+                "Standard hat."),
+            related=["policy_missing_user_rights"],
+        ))
+
+    # --- Phase 9c: tracking pixels (Meta /tr, GA __utm.gif, etc.) ----
+    # Concrete remediation different from "block the script": pixels
+    # specifically can be replaced by Meta Conversions API / GA
+    # Measurement Protocol — server-side events without an in-browser
+    # beacon. Worth its own recommendation even when the broader
+    # tdddg_non_essential_without_consent cap already triggered.
+    pixel_requests = [r for r in network.requests if getattr(r, "is_tracking_pixel", False)]
+    pixel_domains = sorted({r.registered_domain for r in pixel_requests})
+    if pixel_domains:
+        sample = ", ".join(pixel_domains[:5])
+        more_en = f" (+{len(pixel_domains) - 5} more)" if len(pixel_domains) > 5 else ""
+        more_de = f" (+{len(pixel_domains) - 5} weitere)" if len(pixel_domains) > 5 else ""
+        recs.append(Recommendation(
+            priority="high",
+            title=_t(lang,
+                "Replace marketing pixels with server-side events",
+                "Marketing-Pixel durch Server-Side-Events ersetzen"),
+            detail=_t(lang,
+                f"Detected {len(pixel_requests)} tracking-pixel hit(s) to "
+                f"{sample}{more_en}. A pixel beacon = a 1×1 GIF whose only "
+                f"purpose is to fire a marketing event from the visitor's "
+                f"browser. § 25 TDDDG + Art. 6 DSGVO require opt-in consent "
+                f"BEFORE any such load — and the pixel itself can almost "
+                f"always be replaced by a server-to-server call: Meta "
+                f"Conversions API, Google Measurement Protocol (GA4), or "
+                f"the equivalent for your stack. The server-side path also "
+                f"survives ad-blockers + iOS ITP, so this is the rare "
+                f"compliance fix that improves marketing data quality.",
+                f"{len(pixel_requests)} Tracking-Pixel-Hit(s) erkannt an "
+                f"{sample}{more_de}. Ein Pixel-Beacon = ein 1×1-GIF, dessen "
+                f"einziger Zweck ist, ein Marketing-Event aus dem Browser "
+                f"des Besuchers abzufeuern. § 25 TDDDG + Art. 6 DSGVO "
+                f"verlangen Opt-in-Einwilligung VOR jeglichem solchen Load — "
+                f"und das Pixel selbst lässt sich fast immer durch einen "
+                f"Server-zu-Server-Call ersetzen: Meta Conversions API, "
+                f"Google Measurement Protocol (GA4) oder das Äquivalent für "
+                f"deinen Stack. Der server-seitige Pfad überlebt zusätzlich "
+                f"Ad-Blocker + iOS ITP — der seltene Compliance-Fix, der "
+                f"die Marketing-Datenqualität sogar verbessert."),
+            related=pixel_domains,
         ))
 
     # --- Third-party widgets (Phase 2) ---------------------------------
@@ -844,6 +965,36 @@ def _build_recommendations(
                 "Der Banner blockiert die Seite ohne Ablehnungsmöglichkeit. Nutzer können "
                 "nach Art. 4(11) DSGVO nicht freiwillig einwilligen, wenn der einzige "
                 "Ausweg das Akzeptieren ist.",
+            ),
+            "cookie_wall_pay_or_okay": (
+                "high",
+                "Stop conditioning consent on a paid subscription (EDPB Opinion 8/2024)",
+                "Banner offers \"Accept tracking OR pay\" as the only two paths. "
+                "EDPB Opinion 8/2024 (Apr 2024) holds this is NOT freely-given "
+                "consent for large online platforms without an \"equivalent "
+                "alternative without behavioural advertising\" — typically a free "
+                "tier with non-behavioural ads (contextual / first-party). German "
+                "DPAs have followed the EDPB. Fix: add a third path that lets "
+                "users decline tracking without paying — e.g. contextual ads, "
+                "no ads (with reduced features), or first-party-only analytics. "
+                "Manually verify if the paid offer is for an unrelated premium "
+                "feature rather than a tracking opt-out (then the banner is "
+                "fine, the heuristic isn't).",
+                "Einwilligung nicht an ein kostenpflichtiges Abo koppeln (EDPB Opinion 8/2024)",
+                "Der Banner bietet nur \"Tracking akzeptieren ODER bezahlen\". "
+                "Die EDPB-Opinion 8/2024 (April 2024) stuft das für große "
+                "Online-Plattformen als NICHT freiwillig erteilte Einwilligung "
+                "ein, wenn es keine \"gleichwertige Alternative ohne "
+                "verhaltensbasierte Werbung\" gibt — typischerweise eine "
+                "kostenlose Stufe mit nicht-verhaltensbasierter Werbung "
+                "(kontextuell / first-party). Deutsche Datenschutzbehörden "
+                "folgen der EDPB. Fix: einen dritten Pfad anbieten, der "
+                "Tracking ohne Bezahlung ablehnen lässt — z.B. kontextuelle "
+                "Werbung, gar keine Werbung (mit reduzierten Funktionen) oder "
+                "ausschließlich First-Party-Analytics. Manuell prüfen, falls "
+                "das kostenpflichtige Angebot ein unrelated Premium-Feature "
+                "betrifft und nicht das Tracking-Opt-out (dann ist der Banner "
+                "in Ordnung, die Heuristik liegt daneben).",
             ),
         }
         seen_codes: set[str] = set()
@@ -1326,6 +1477,43 @@ def _build_recommendations(
             related=forms_no_consent,
         ))
 
+    # --- Phase 9: pre-checked consent boxes (Planet49) ----------------
+    # Independent of `_is_collection_pii` because Planet49 applies
+    # wherever consent is the legal basis — newsletter signup, contact
+    # form, anywhere a pre-ticked box "agrees" to processing.
+    forms_pre_checked = [f.page_url for f in forms.forms if f.has_pre_checked_consent]
+    if forms_pre_checked:
+        sample_pre = ", ".join(forms_pre_checked[:5])
+        more_pre_en = f" (and {len(forms_pre_checked) - 5} more)" if len(forms_pre_checked) > 5 else ""
+        more_pre_de = f" (und {len(forms_pre_checked) - 5} weitere)" if len(forms_pre_checked) > 5 else ""
+        recs.append(Recommendation(
+            priority="high",
+            title=_t(lang,
+                "Ship consent checkboxes UN-checked (EuGH Planet49)",
+                "Consent-Checkboxen UN-angekreuzt ausliefern (EuGH Planet49)"),
+            detail=_t(lang,
+                f"{len(forms_pre_checked)} form(s) detected with a pre-ticked "
+                f"consent checkbox: {sample_pre}{more_pre_en}. EuGH Planet49 "
+                f"(C-673/17, 2019) + Art. 7(2) DSGVO: pre-ticked checkboxes "
+                f"do NOT constitute valid consent — every German DPA cites "
+                f"this as a baseline finding. Fix: remove the `checked` "
+                f"attribute from `<input type=\"checkbox\">` in the form's "
+                f"HTML so the user must affirmatively tick to consent. "
+                f"Verify the recommendation manually if the affected box "
+                f"is for a non-consent purpose (e.g. \"remember me\").",
+                f"{len(forms_pre_checked)} Formular(e) mit vorab angekreuzter "
+                f"Consent-Checkbox erkannt: {sample_pre}{more_pre_de}. EuGH "
+                f"Planet49 (C-673/17, 2019) + Art. 7 Abs. 2 DSGVO: vor-"
+                f"angekreuzte Checkboxen sind KEINE wirksame Einwilligung — "
+                f"jede deutsche Datenschutzbehörde zitiert das als Baseline-"
+                f"Beanstandung. Fix: das `checked`-Attribut aus "
+                f"`<input type=\"checkbox\">` im Formular-HTML entfernen, "
+                f"sodass der Nutzer aktiv ankreuzen muss. Manuell prüfen, "
+                f"falls die betreffende Box einen nicht-Consent-Zweck hat "
+                f"(z.B. \"angemeldet bleiben\")."),
+            related=forms_pre_checked,
+        ))
+
     forms_no_link = [f.page_url for f in forms.forms
                      if _is_collection_pii(f) and not f.has_privacy_link]
     if forms_no_link:
@@ -1415,7 +1603,7 @@ def compute_risk(
         cookies=cookies, network=network, privacy=privacy,
         has_policy=has_policy, has_imprint=has_imprint,
         channels=channels, widgets=widgets, consent=consent,
-        security=security, libs=libs,
+        security=security, libs=libs, forms=forms,
     )
     final = weighted
     for cap in caps:

@@ -25,7 +25,9 @@ export type DarkPatternCode =
   | "reject_much_smaller"
   | "reject_below_fold"
   | "reject_low_prominence"
-  | "forced_interaction";
+  | "forced_interaction"
+  /** Phase 9e — "Pay or okay" cookie wall (EDPB Opinion 8/2024). */
+  | "cookie_wall_pay_or_okay";
 
 export type WidgetCategory =
   | "video" | "map" | "chat" | "auth" | "social_embed" | "other";
@@ -58,6 +60,8 @@ export interface FormField {
   name: string | null;
   type: string | null;
   required: boolean;
+  /** HTML `checked` attribute. Phase 9 — feeds the EuGH Planet49 check. */
+  is_pre_checked?: boolean;
 }
 
 export interface StorageItem {
@@ -76,6 +80,8 @@ export interface FormInfo {
   text_content: string;
   links: string[];
   has_checkbox: boolean;
+  /** True iff any checkbox in the form ships pre-ticked. */
+  has_pre_checked_box?: boolean;
 }
 
 export interface PageInfo {
@@ -100,6 +106,8 @@ export interface NetworkRequest {
   status: number | null;
   initiator_page: string;
   is_third_party: boolean;
+  /** Phase 9c — Meta /tr, GA __utm.gif, or generic 1×1 marketing beacon. */
+  is_tracking_pixel?: boolean;
 }
 
 export interface DataFlowEntry {
@@ -186,6 +194,24 @@ export interface PolicyTopicCoverage {
   children_data_addressed: boolean;
 }
 
+export type DsarRight =
+  | "access"
+  | "rectification"
+  | "erasure"
+  | "restriction"
+  | "portability"
+  | "objection"
+  | "complaint"
+  | "withdraw_consent";
+
+export interface DsarCheck {
+  named_rights: DsarRight[];
+  has_rights_contact: boolean;
+  contact_excerpt: string | null;
+  /** 0-100 — convenience aggregate. ~12 points per named right + 16 for contact. */
+  score: number;
+}
+
 export interface PrivacyAnalysis {
   provider: string;
   model: string | null;
@@ -196,6 +222,8 @@ export interface PrivacyAnalysis {
   compliance_score: number;
   excerpt_chars_sent: number;
   error: string | null;
+  /** Phase 9d — deterministic DSAR check; null when no policy text was found. */
+  dsar?: DsarCheck | null;
 }
 
 export interface FormFinding {
@@ -207,6 +235,8 @@ export interface FormFinding {
   field_count: number;
   has_consent_checkbox: boolean;
   has_privacy_link: boolean;
+  /** Phase 9 — Planet49 / Art. 7(2) DSGVO violation when true. */
+  has_pre_checked_consent?: boolean;
   legal_text_excerpt: string | null;
   issues: string[];
 }
@@ -369,6 +399,9 @@ export interface ConsentUxAudit {
   findings: DarkPatternFinding[];
   accept_metrics: Record<string, number | string | boolean> | null;
   reject_metrics: Record<string, number | string | boolean> | null;
+  /** Phase 9e — visible text inside the banner container (size-capped),
+   *  fed into cookie_wall_detector for the EDPB Opinion 8/2024 check. */
+  banner_text?: string | null;
 }
 
 export interface ConsentSimulation {

@@ -9,7 +9,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { severityColor } from "@/lib/utils";
 import { useLang } from "@/lib/LanguageContext";
 import type { Lang } from "@/lib/i18n";
-import type { PolicyIssue, PrivacyAnalysis } from "@/lib/types";
+import type { DsarCheck, DsarRight, PolicyIssue, PrivacyAnalysis } from "@/lib/types";
 
 const COVERAGE_LABELS: Record<Lang, Record<string, string>> = {
   en: {
@@ -137,6 +137,8 @@ export function PrivacyAnalysisCard({ analysis }: { analysis: PrivacyAnalysis })
             </ul>
           </div>
         )}
+
+        {analysis.dsar && <DsarBlock dsar={analysis.dsar} />}
 
         {analysis.issues.length > 0 && (
           <div>
@@ -311,6 +313,103 @@ function SuggestedTextBlock({ text }: { text: string }) {
             </Button>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// -- DSAR / Art. 13(2)(b) deterministic check ----------------------------
+//
+// Mirrors backend/app/modules/dsar_detector.py output. The detector runs
+// even when the AI provider is `none`, so this block is the only privacy
+// signal a no-key install ever shows. Score-driven tone: ≥80 green,
+// ≥40 amber, <40 red.
+
+const DSAR_RIGHT_LABEL: Record<Lang, Record<DsarRight, string>> = {
+  en: {
+    access: "Right of access (Art. 15)",
+    rectification: "Right to rectification (Art. 16)",
+    erasure: "Right to erasure (Art. 17)",
+    restriction: "Right to restriction (Art. 18)",
+    portability: "Right to portability (Art. 20)",
+    objection: "Right to object (Art. 21)",
+    complaint: "Right to complain to a DPA (Art. 77)",
+    withdraw_consent: "Right to withdraw consent (Art. 7(3))",
+  },
+  de: {
+    access: "Auskunftsrecht (Art. 15)",
+    rectification: "Recht auf Berichtigung (Art. 16)",
+    erasure: "Recht auf Löschung (Art. 17)",
+    restriction: "Recht auf Einschränkung (Art. 18)",
+    portability: "Recht auf Datenübertragbarkeit (Art. 20)",
+    objection: "Widerspruchsrecht (Art. 21)",
+    complaint: "Beschwerderecht bei der Aufsichtsbehörde (Art. 77)",
+    withdraw_consent: "Widerruf der Einwilligung (Art. 7(3))",
+  },
+};
+
+const ALL_DSAR_RIGHTS: DsarRight[] = [
+  "access",
+  "rectification",
+  "erasure",
+  "restriction",
+  "portability",
+  "objection",
+  "complaint",
+  "withdraw_consent",
+];
+
+function DsarBlock({ dsar }: { dsar: DsarCheck }) {
+  const { t, lang } = useLang();
+  const named = new Set(dsar.named_rights);
+  const score = dsar.score;
+  const tone =
+    score >= 80
+      ? "text-risk-low"
+      : score >= 40
+      ? "text-risk-medium"
+      : "text-risk-high";
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          {t("privacy.dsar.title")}
+        </div>
+        <div className={`text-xs font-mono ${tone}`}>
+          {t("privacy.dsar.score", { score, total: ALL_DSAR_RIGHTS.length })}
+        </div>
+      </div>
+      <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+        {ALL_DSAR_RIGHTS.map((r) => {
+          const present = named.has(r);
+          return (
+            <li key={r} className="flex items-center gap-2 text-sm">
+              {present ? (
+                <Check className="h-4 w-4 text-risk-low" />
+              ) : (
+                <X className="h-4 w-4 text-risk-high" />
+              )}
+              <span className={present ? "" : "text-muted-foreground"}>
+                {DSAR_RIGHT_LABEL[lang][r]}
+              </span>
+            </li>
+          );
+        })}
+        <li className="flex items-center gap-2 text-sm sm:col-span-2">
+          {dsar.has_rights_contact ? (
+            <Check className="h-4 w-4 text-risk-low" />
+          ) : (
+            <X className="h-4 w-4 text-risk-high" />
+          )}
+          <span className={dsar.has_rights_contact ? "" : "text-muted-foreground"}>
+            {t("privacy.dsar.contact")}
+          </span>
+        </li>
+      </ul>
+      {dsar.contact_excerpt && (
+        <blockquote className="mt-2 border-l-2 pl-3 text-xs italic text-muted-foreground">
+          “{dsar.contact_excerpt}”
+        </blockquote>
       )}
     </div>
   );

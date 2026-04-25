@@ -17,6 +17,7 @@ const DARK_PATTERN_LABEL: Record<Lang, Record<DarkPatternCode, string>> = {
     reject_below_fold:        "Reject button below the viewport",
     reject_low_prominence:    "Reject styled less prominently",
     forced_interaction:       "Banner blocks content without opt-out",
+    cookie_wall_pay_or_okay:  "Cookie wall — accept tracking or pay (EDPB Op. 8/2024)",
   },
   de: {
     no_direct_reject:         "Kein Ablehnen-Button auf erster Ebene",
@@ -25,6 +26,7 @@ const DARK_PATTERN_LABEL: Record<Lang, Record<DarkPatternCode, string>> = {
     reject_below_fold:        "Ablehnen-Button unterhalb des Viewports",
     reject_low_prominence:    "Ablehnen weniger prominent gestaltet",
     forced_interaction:       "Banner blockiert Content ohne Opt-out",
+    cookie_wall_pay_or_okay:  "Cookie-Wall — Tracking akzeptieren oder zahlen (EDPB Op. 8/2024)",
   },
 };
 

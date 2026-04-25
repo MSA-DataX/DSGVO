@@ -28,6 +28,11 @@ DarkPatternCode = Literal[
     "reject_below_fold",        # reject button not in the initial viewport
     "reject_low_prominence",    # weaker font-weight / no background / lower opacity
     "forced_interaction",       # banner blocks content and offers no opt-out
+    # Phase 9e: "Pay or okay" cookie wall — accept tracking OR pay a
+    # subscription. EDPB Opinion 8/2024 (April 2024): not valid consent
+    # for large online platforms without an "equivalent alternative
+    # without behavioural advertising".
+    "cookie_wall_pay_or_okay",
 ]
 WidgetKind = Literal[
     # video
@@ -88,6 +93,11 @@ class FormField(BaseModel):
     name: str | None = None
     type: str | None = None
     required: bool = False
+    # Phase 9: HTML `checked` attribute on a checkbox input — relevant
+    # for the EuGH Planet49 / Art. 7(2) DSGVO check (pre-ticked
+    # consent boxes are NOT valid consent). Always False for non-
+    # checkbox inputs.
+    is_pre_checked: bool = False
 
 
 class FormInfo(BaseModel):
@@ -98,6 +108,10 @@ class FormInfo(BaseModel):
     text_content: str = ""           # visible text inside the form (labels, legal copy)
     links: list[str] = []            # absolute hrefs found inside the form
     has_checkbox: bool = False
+    # Derived in the crawler so form_analyzer doesn't need to re-walk
+    # the field list. True iff *any* checkbox in the form ships with
+    # the HTML `checked` attribute set.
+    has_pre_checked_box: bool = False
 
 
 class StorageItem(BaseModel):
@@ -134,6 +148,13 @@ class NetworkRequest(BaseModel):
     status: int | None
     initiator_page: str
     is_third_party: bool
+    # Phase 9c: 1×1 GIF / .png beacon to a known marketing endpoint
+    # (Meta /tr, GA __utm.gif, generic /pixel|/beacon|/conversion).
+    # Pre-consent loads of these are the textbook § 25 TDDDG /
+    # ePrivacy violation; surfacing them separately gives auditors a
+    # specific remediation hook (Conversions API / server-side events)
+    # rather than the generic "third-party tracker contacted" finding.
+    is_tracking_pixel: bool = False
 
 
 class DataFlowEntry(BaseModel):
@@ -243,6 +264,28 @@ class PolicyTopicCoverage(BaseModel):
     children_data_addressed: bool
 
 
+class DsarCheck(BaseModel):
+    """Deterministic check for whether a privacy policy explains how a
+    data subject exercises their GDPR Art. 15-22 rights (Phase 9d).
+
+    Independent of the AI layer — runs on the raw policy text via
+    keyword matching, so it produces a baseline signal even when the
+    operator runs the scanner with ``AI_PROVIDER=none``. The AI layer's
+    ``PolicyTopicCoverage.user_rights_enumerated`` is the prose-level
+    judgement; this is the regex-level cross-check.
+    """
+    # Subset of:
+    #   "access" (Art. 15), "rectification" (16), "erasure" (17),
+    #   "restriction" (18), "portability" (20), "objection" (21),
+    #   "complaint" (77), "withdraw_consent" (7(3)).
+    named_rights: list[str] = []
+    has_rights_contact: bool = False
+    contact_excerpt: str | None = None
+    # Convenience score 0-100. Each named right is worth ~12 points,
+    # contact presence is worth 16. Used by scoring + UI badges.
+    score: int = Field(ge=0, le=100, default=0)
+
+
 class PrivacyAnalysis(BaseModel):
     provider: str                     # "openai" | "azure" | "none"
     model: str | None                 # model/deployment used, if any
@@ -253,6 +296,10 @@ class PrivacyAnalysis(BaseModel):
     compliance_score: int = Field(ge=0, le=100)
     excerpt_chars_sent: int = 0       # how much of the policy reached the model
     error: str | None = None          # set when AI step was skipped or failed
+    # Phase 9d — deterministic DSAR check populated when the policy
+    # text was fetched. None when no policy was found (the cap layer
+    # already handles that case via has_policy=False).
+    dsar: DsarCheck | None = None
 
 
 class FormFinding(BaseModel):
@@ -267,6 +314,11 @@ class FormFinding(BaseModel):
     field_count: int
     has_consent_checkbox: bool
     has_privacy_link: bool
+    # Phase 9: True when a pre-ticked checkbox sits inside a form whose
+    # surrounding text contains consent/marketing vocabulary. Settled
+    # CJEU case law since Planet49 (C-673/17, 2019) — pre-ticked is
+    # NOT valid consent under Art. 7(2) DSGVO. Drives a hard cap.
+    has_pre_checked_consent: bool = False
     legal_text_excerpt: str | None
     issues: list[str]                 # human-readable findings
 
@@ -459,6 +511,10 @@ class ConsentUxAudit(BaseModel):
     # side-by-side comparison without re-measuring.
     accept_metrics: dict[str, float | bool | str] | None = None
     reject_metrics: dict[str, float | bool | str] | None = None
+    # Phase 9e: visible text inside the banner container, capped to a
+    # reasonable size so we don't ship the whole modal verbatim. Fed
+    # into cookie_wall_detector for the EDPB Opinion 8/2024 check.
+    banner_text: str | None = None
 
 
 class ConsentSimulation(BaseModel):

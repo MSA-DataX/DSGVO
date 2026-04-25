@@ -153,6 +153,37 @@ def _has_privacy_link(form: FormInfo, known_privacy_url: str | None) -> bool:
     return any(h in text for h in _PRIVACY_TEXT_HINTS)
 
 
+# Vocabulary that signals "this checkbox is asking for CONSENT" (vs e.g.
+# "remember me" or "show advanced options"). Pre-ticking a consent box is
+# a textbook EuGH Planet49 / Art. 7(2) violation; pre-ticking a "remember
+# my preferences" box is fine. Bilingual because German B2B forms switch
+# language case-by-case.
+_CONSENT_VOCAB: tuple[str, ...] = (
+    # German
+    "einwilligung", "einverstanden", "akzeptier", "zustimm",
+    "newsletter", "marketing", "werbung", "datenschutz",
+    # English
+    "consent", "agree", "accept", "i confirm",
+    "privacy", "subscribe", "promotional",
+)
+
+
+def _has_pre_checked_consent(form: FormInfo) -> bool:
+    """True iff (a) any checkbox in the form ships pre-ticked AND (b) the
+    surrounding form text contains consent vocabulary.
+
+    Without DOM-proximity tracking we can't say "this PARTICULAR
+    checkbox is the consent one"; the form-level conjunction is the
+    practical heuristic. False positives ("the form mentions privacy
+    but the pre-ticked box is for 'remember me'") are the price for a
+    cheap signal — the recommendation tells the auditor to verify.
+    """
+    if not form.has_pre_checked_box:
+        return False
+    haystack = (form.text_content or "").lower()
+    return any(token in haystack for token in _CONSENT_VOCAB)
+
+
 def _legal_excerpt(form: FormInfo) -> str | None:
     text = form.text_content
     if not text:
@@ -186,8 +217,23 @@ def _build_finding(form: FormInfo, known_privacy_url: str | None) -> FormFinding
     has_privacy_link = _has_privacy_link(form, known_privacy_url)
     legal_excerpt = _legal_excerpt(form)
     collects_pii = bool(set(categories) & _PII_CATEGORIES)
+    has_pre_checked_consent = _has_pre_checked_consent(form)
 
     issues: list[str] = []
+
+    # Pre-checked consent applies regardless of purpose — Planet49
+    # (CJEU C-673/17, 2019) doesn't carve out search forms or auth
+    # forms, it carves out NON-CONSENT-BASED legal grounds. The
+    # `_has_pre_checked_consent` heuristic already filters by
+    # consent vocabulary, so if it fired we have a problem worth
+    # surfacing across all purposes.
+    if has_pre_checked_consent:
+        issues.append(
+            "Pre-checked consent box detected — Art. 7(2) DSGVO + EuGH "
+            "Planet49 (C-673/17): pre-ticked checkboxes do NOT constitute "
+            "valid consent. Ship the form with the box unchecked; the user "
+            "must affirmatively tick it."
+        )
 
     if purpose == "collection":
         # Full GDPR scrutiny — this is a form where data is submitted to
@@ -239,6 +285,7 @@ def _build_finding(form: FormInfo, known_privacy_url: str | None) -> FormFinding
         field_count=len(form.fields),
         has_consent_checkbox=form.has_checkbox,
         has_privacy_link=has_privacy_link,
+        has_pre_checked_consent=has_pre_checked_consent,
         legal_text_excerpt=legal_excerpt,
         issues=issues,
     )
@@ -255,6 +302,10 @@ def analyze_forms(forms: list[FormInfo], known_privacy_url: str | None) -> FormR
         "forms_collecting_pii": sum(1 for f in collection if set(f.collected_data) & _PII_CATEGORIES),
         "forms_with_consent_checkbox": sum(1 for f in collection if f.has_consent_checkbox),
         "forms_with_privacy_link": sum(1 for f in collection if f.has_privacy_link),
+        # Phase 9: counted across ALL forms, not just collection — Planet49
+        # applies wherever consent is the legal basis. scoring.py keys off
+        # this for the pre_checked_consent_box hard cap.
+        "forms_with_pre_checked_consent": sum(1 for f in findings if f.has_pre_checked_consent),
         "forms_with_issues": sum(1 for f in findings if f.issues),
         "forms_search": sum(1 for f in findings if f.purpose == "search"),
         "forms_authentication": sum(1 for f in findings if f.purpose == "authentication"),

@@ -74,6 +74,8 @@ const EN: Dict = {
   "flow.h.risk":             "Risk",
   "flow.h.categories":       "Categories",
   "flow.h.requests":         "Requests",
+  "flow.pixels.title":       "{count} pre-consent tracking pixel hit(s)",
+  "flow.pixels.desc":        "1×1 marketing beacons (Meta /tr, GA __utm.gif, generic /pixel /beacon /conversion) fired before any consent click — § 25 TDDDG / ePrivacy violation. Move to a server-side equivalent (Conversions API / Measurement Protocol) or gate behind explicit opt-in.",
 
   // cookies
   "cookies.title":           "Cookies & Web Storage",
@@ -123,6 +125,9 @@ const EN: Dict = {
   "privacy.code.title":      "Implementation snippet",
   "privacy.code.copy":       "Copy snippet",
   "privacy.monitor":         "Monitor: {trigger}",
+  "privacy.dsar.title":      "Data subject rights (Art. 13(2)(b))",
+  "privacy.dsar.score":      "{score}/{total} rights named",
+  "privacy.dsar.contact":    "Contact for rights requests stated",
 
   // forms section
   "forms.title":             "Forms",
@@ -140,6 +145,8 @@ const EN: Dict = {
   "forms.legal":             "Legal text excerpt",
   "forms.ok":                "OK",
   "forms.issues":            "{count} issue(s)",
+  "forms.planet49.badge":    "Planet49",
+  "forms.planet49.tooltip":  "Pre-ticked consent checkbox — invalid consent under Art. 7(2) GDPR (CJEU Planet49, C-673/17).",
 
   // consent section
   "consent.title":           "Consent simulation",
@@ -437,6 +444,8 @@ const DE: Dict = {
   "flow.h.risk":             "Risiko",
   "flow.h.categories":       "Kategorien",
   "flow.h.requests":         "Requests",
+  "flow.pixels.title":       "{count} Tracking-Pixel-Hit(s) vor Consent",
+  "flow.pixels.desc":        "1×1-Marketing-Beacons (Meta /tr, GA __utm.gif, generisch /pixel /beacon /conversion) wurden vor jedem Consent-Klick ausgelöst — Verstoß gegen § 25 TDDDG / ePrivacy. Auf serverseitige Pendants (Conversions API / Measurement Protocol) umstellen oder hinter explizites Opt-in legen.",
 
   // cookies
   "cookies.title":           "Cookies & Web-Storage",
@@ -486,6 +495,9 @@ const DE: Dict = {
   "privacy.code.title":      "Implementierungs-Snippet",
   "privacy.code.copy":       "Snippet kopieren",
   "privacy.monitor":         "Überwachen: {trigger}",
+  "privacy.dsar.title":      "Betroffenenrechte (Art. 13(2)(b))",
+  "privacy.dsar.score":      "{score}/{total} Rechte benannt",
+  "privacy.dsar.contact":    "Kontakt für Rechte-Anfragen genannt",
 
   // forms
   "forms.title":             "Formulare",
@@ -503,6 +515,8 @@ const DE: Dict = {
   "forms.legal":             "Rechtstext-Auszug",
   "forms.ok":                "OK",
   "forms.issues":            "{count} Finding(s)",
+  "forms.planet49.badge":    "Planet49",
+  "forms.planet49.tooltip":  "Vorausgewählte Consent-Checkbox — keine wirksame Einwilligung nach Art. 7(2) DSGVO (EuGH Planet49, C-673/17).",
 
   // consent section
   "consent.title":           "Consent-Simulation",

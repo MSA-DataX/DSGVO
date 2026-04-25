@@ -25,11 +25,20 @@ your retention policy" — here it is.
 
 No automatic expiration. Users retain access indefinitely; the
 product's value depends on historical continuity. On deletion
-request (Art. 17 GDPR / §35 BDSG): the row is removed; dependent
-`memberships` cascade-delete; `scans` become orphaned
-(`organization_id IS NULL`) — which the scoped queries treat as
-"invisible to every tenant". They're purged during the next nightly
-sweep (TODO Phase 8).
+request (Art. 17 GDPR / §35 BDSG): the user calls
+[`DELETE /auth/me`](../backend/app/routers/auth.py) (Phase 8). The
+endpoint:
+
+1. Cancels Mollie subscriptions on orgs where the user is the sole
+   owner (best-effort — billing-API outage MUST NOT block erasure).
+2. Deletes those orgs (CASCADE drops scans, memberships, subscription).
+3. Deletes the user (CASCADE drops remaining co-owner memberships).
+4. Audit rows survive via `actor_user_id ON DELETE SET NULL` —
+   `actor_email` is denormalised at write time so the trail stays
+   readable.
+
+Orphan scans (organization_id IS NULL) are caught by the nightly
+retention sweep — defensive only, expected count is 0.
 
 ### Scan history: 12 months
 
@@ -42,15 +51,12 @@ Shorter than you might expect. Reasoning:
 - Compliance use-cases are "current state" driven; historical scans
   older than ~12 months are rarely referenced in our analytics
   telemetry.
-- Customers who need longer history have an explicit
-  self-service export (CSV via the dashboard) — Phase 8 feature.
 
-Enforcement (Phase 8 cron job, not yet shipped):
-
-```sql
-DELETE FROM scans
-WHERE created_at < (NOW() - INTERVAL '12 months');
-```
+**Enforcement (Phase 8, shipped):** an Arq cron in
+`app.worker.WorkerSettings` fires `retention_sweep_task` every day
+at 03:30 UTC. The job is implemented in
+[app/retention.py](../backend/app/retention.py) and exposed for
+manual ops via `python -m app.cli.retention [--dry-run]`.
 
 ### Audit log: 3 years
 
@@ -62,10 +68,11 @@ Longer than scans for two reasons:
 - The rows are small (~500 bytes each) — a year of even heavy admin
   usage is < 10 MB. Cost is negligible.
 
-Explicitly append-only. There is no UPDATE/DELETE code path in the
-application. Retention enforcement happens at the database layer —
-e.g. a scheduled `DELETE FROM audit_logs WHERE created_at < NOW() -
-INTERVAL '3 years'` run monthly by an operator or Phase 8 cron.
+The `audit_logs` table has no UPDATE/DELETE code path from any HTTP
+endpoint — convention #18 makes that explicit. The single exception
+is `purge_audit_older_than()` called by the nightly retention cron
+(Phase 8). New code that wants to mutate audit_logs needs a
+documented exception in convention #25.
 
 ### DB backups: 30 daily + 12 monthly
 
@@ -95,9 +102,8 @@ Current endpoints:
   **their own** scans. Tenant-scoped; cross-tenant IDs return 404.
 - `POST /billing/cancel` — cancels subscription; plan stays active
   until period-end; no personal-data deletion (user still signed in).
-- **Account deletion** (Art. 17): currently manual via
-  `DELETE FROM users WHERE email = ?`. Self-service endpoint is a
-  Phase 8 task.
+- `DELETE /auth/me` — Art. 17 right to erasure (Phase 8). See the
+  "User account" section above for the cascade behaviour.
 
 ## 4. Operator-initiated deletion (incident / legal hold)
 

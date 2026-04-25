@@ -43,7 +43,9 @@ Currently a single-node dev tool, not yet a multi-tenant SaaS. See the
 │   │   ├── observability/metrics.py  Prometheus counters + /metrics renderer
 │   │   ├── observability/sentry.py   Opt-in Sentry init with PII scrubber
 │   │   ├── jobs.py             Arq enqueue helper — POST /scan/jobs calls enqueue_scan()
-│   │   ├── worker.py           Arq WorkerSettings + run_scan_task — started via `arq app.worker.WorkerSettings`
+│   │   ├── worker.py           Arq WorkerSettings — run_scan_task + nightly retention_sweep_task cron
+│   │   ├── retention.py        Pure helpers: purge_scans_older_than / purge_audit_older_than / purge_orphan_scans
+│   │   ├── cli/retention.py    `python -m app.cli.retention [--dry-run]` for manual sweeps
 │   │   ├── progress.py         ProgressReporter (asyncio.Queue) + RedisProgressReporter (drainer → pub/sub)
 │   │   ├── progress_bus.py     publish_progress / subscribe_progress — Redis pub/sub wrapper for Phase 3b
 │   │   └── modules/
@@ -205,6 +207,9 @@ else → `backend/.env`.
   issues. Recommendations filter on `purpose == "collection"` — do NOT
   grep issue strings (past bug where "no consent checkbox" in negated text
   matched the filter).
+- The pre-checked-consent issue (Phase 9) is the ONE form-issue that
+  fires regardless of purpose — Planet49 applies wherever consent is
+  the legal basis. Convention #28 spells out the heuristic.
 
 **11. Auth token lives in an httpOnly cookie, never in JS.**
 - The client NEVER sees the JWT. `/api/auth/{signup,login}` strip the
@@ -507,6 +512,151 @@ else → `backend/.env`.
   a 6-month audit with a vendor like Drata. These artefacts are the
   80% of evidence the auditor asks for; the remaining 20% is log
   preservation over the observation period.
+
+**25. Retention is enforced by an Arq cron, plus a CLI for ops.**
+- `app/retention.py` is the single source of truth: pure async
+  functions `purge_scans_older_than(months=12)`,
+  `purge_audit_older_than(years=3)`, `purge_orphan_scans()`. Numbers
+  default to whatever `docs/retention-policy.md` says.
+- `WorkerSettings.cron_jobs` includes a daily 03:30 UTC firing of
+  `retention_sweep_task` — Arq distributes cron across worker
+  instances so only ONE worker runs each firing even at scale.
+- `python -m app.cli.retention --dry-run` for "how many rows would
+  this delete?" inspections. `--scan-months` / `--audit-years`
+  override defaults for one-off sweeps after a policy tightening.
+- The retention helpers are the ONE app-layer code path that
+  DELETEs from `audit_logs`. Convention #18 says audit is append-
+  only from the app — this is the documented exception, guarded by
+  the cron schedule. A new HTTP path that mutates audit_logs
+  requires updating both #18 and this convention.
+
+**26. Account self-deletion (Art. 17) cascades carefully.**
+- `DELETE /auth/me` resolves the user's "sole-owner" org list, tries
+  to cancel each org's Mollie subscription (best-effort — billing
+  API outage MUST NOT block a GDPR right), audit-logs
+  `user.self_delete`, then deletes the orgs (CASCADE drops their
+  scans, memberships, subscription) and finally the user (CASCADE
+  drops the remaining co-owner memberships).
+- Audit rows survive: `audit_logs.actor_user_id` has
+  `ON DELETE SET NULL`, so historical actions still read with the
+  denormalised `actor_email` column.
+- The mollie-cancel counter only ticks when
+  `cancel_org_subscription` returns `status="canceled"` — orgs that
+  never had a paid subscription return `status="no_active_subscription"`,
+  not an error, and don't count.
+- The user's JWT stays cryptographically valid until TTL after
+  deletion; the frontend is expected to follow up with
+  `/api/auth/logout` to clear the cookie. Subsequent requests 401
+  anyway because `get_current_user` can't find the user row.
+
+**27. SQLite needs `PRAGMA foreign_keys=ON` per connection.**
+- SQLite ships with FK enforcement OFF. Without the PRAGMA,
+  declared `ON DELETE CASCADE` / `SET NULL` are no-ops on dev/tests,
+  while Postgres in production enforces them. That divergence hides
+  bugs until production sees an Art. 17 erasure request.
+- `app.db.install_sqlite_fk_pragma(engine)` registers a
+  `connect`-event listener that runs the PRAGMA on every new
+  connection. The module-level production engine wires it
+  automatically; every test fixture that builds a fresh in-memory
+  engine MUST also call it (search the test files for
+  `install_sqlite_fk_pragma` — there's a copy in each `app_with_db`
+  fixture).
+- Consequence: a multi-row insert spanning a parent + child
+  relationship needs an explicit `await session.flush()` between
+  the parent and the child. SQLAlchemy's unit-of-work topo-sorts
+  by declared `relationship()`, NOT by raw FK columns. The signup
+  handler in `routers/auth.py` is the canonical example.
+
+**28. Pre-checked consent boxes are detected via two-part heuristic.**
+- Crawler reads HTML `checked` attribute → `FormField.is_pre_checked`
+  (per-field) + `FormInfo.has_pre_checked_box` (form-level OR).
+- `form_analyzer._has_pre_checked_consent(form)` requires BOTH:
+  (a) any pre-ticked checkbox AND (b) the form's text_content
+  contains a token from `_CONSENT_VOCAB` (DE: `einwilligung`,
+  `einverstanden`, `newsletter`, `zustimm`…; EN: `consent`,
+  `agree`, `subscribe`…). Without (b) we'd false-positive on
+  benign pre-ticks like "Remember me" or "Show advanced options".
+- A hit fires `pre_checked_consent_box` hard cap at 40 — same
+  severity tier as `us_marketing_no_consent`. Settled CJEU case
+  law (Planet49 / C-673/17, 2019); German DPAs cite it as a
+  baseline finding.
+- Recommendation cites the case + Art. 7(2) DSGVO + tells the
+  auditor to manually verify when the affected box might be a
+  non-consent purpose.
+
+**29. Tracking pixels get their own detection separate from generic trackers.**
+- `NetworkRequest.is_tracking_pixel` is set at request-emit time
+  by `network_analyzer.is_tracking_pixel()` — pure function, no
+  await on response body. Two rule families:
+  (1) Meta-specific: `registered_domain == "facebook.com"` AND path
+  is exactly `/tr` or starts with `/tr/`.
+  (2) Generic: third-party image resource whose path contains one
+  of `_PIXEL_GENERIC_PATH_TOKENS` (`/pixel`, `/beacon`,
+  `/conversion`, `/__utm.gif`, `/1x1.gif`, `/clear.gif`,
+  `/blank.gif`, `/spacer.gif`).
+- Resource type MUST be `"image"` for the generic rule —
+  `connect.facebook.net/.../fbevents.js` is the loader script, not
+  a pixel hit. Counting both would double-flag the same event.
+- Known precision gap (pinned in tests): the generic-token check
+  uses `in path`, so `/pixelart/foo.gif` matches `/pixel`. Documented
+  rather than silently fixed because the false-positive cost in
+  practice is "auditor checks one extra URL". Tighten when we have
+  evidence it matters.
+- No new hard cap — existing `tdddg_non_essential_without_consent`
+  (50) already catches pre-consent pixel loads. The pixel-specific
+  recommendation gives the auditor a concrete remediation
+  (Conversions API / Measurement Protocol server-side events)
+  separate from the generic "block the script" advice.
+
+**30. DSAR detection is deterministic — works without an AI provider.**
+- `app/modules/dsar_detector.py` matches eight canonical Art. 15-22 +
+  Art. 7(3) + Art. 77 rights against the raw policy text via DE + EN
+  vocabulary. Output lands on `PrivacyAnalysis.dsar` (a `DsarCheck`).
+- The detector runs from `scanner.py` AFTER `_run_ai_analysis`, even
+  when the AI provider is `none`. That's the value:
+  `PolicyTopicCoverage.user_rights_enumerated` is absent without AI,
+  but the deterministic check still produces signal.
+- Phrasing precision matters: `"complaint"` alone is too generic
+  (customer-service contexts), so the detector pairs it with a
+  supervisory-authority token (`aufsichtsbehörde` / `supervisory
+  authority` / `data protection authority`). Same trick for
+  withdrawal — `"einwilligung"` alone wouldn't match; only the
+  paired phrasings `"widerruf der einwilligung"` /
+  `"einwilligung widerrufen"` fire.
+- Whitespace is normalised (`\s+ → " "`) before substring matching
+  so a multi-line "the right to withdraw\nconsent" still hits.
+- Cap `policy_missing_user_rights` (55) fires when `has_policy=True`
+  AND `privacy.dsar is not None` AND `len(named_rights) == 0`.
+  Same severity tier as `no_legal_basis_stated` — both are Art. 13
+  enumeration failures, both produce DPA findings.
+- Recommendation cites Art. 13(2)(b), points German operators at the
+  DSK template, and lists the eight rights so the reader knows what
+  the auditor expects to see.
+
+**31. Cookie-wall ("Pay or Okay") detection runs on captured banner text.**
+- `app/modules/cookie_wall_detector.py` is a pure function: text in,
+  optional `DarkPatternFinding` out. Two-part conjunction — the banner
+  must contain BOTH an accept token (`accept all`, `alle akzeptieren`,
+  …) AND a pay/subscribe token (`pur abo`, `werbefrei abonnieren`,
+  `subscribe to remove ads`, `pay or okay`, …). Either alone is not a
+  cookie wall.
+- `consent_ux_audit.audit_consent_ux` captures up to 2000 chars of
+  banner text via a small `page.evaluate(...)` that walks up from the
+  accept button to a "container-shaped" ancestor (`role=dialog`,
+  class/id matching `cookie|consent|banner|cmp|privacy|gdpr`, or 8
+  levels up). Stored on `ConsentUxAudit.banner_text` so the dashboard
+  can show it.
+- The detector gets called from inside `audit_consent_ux` and appends
+  to the same `findings` list. NO new hard cap — the existing
+  `consent_dark_pattern_high` (45) already trips on any HIGH-severity
+  finding, including this one. We add a SPECIFIC bilingual
+  recommendation in `scoring.py`'s `code_details` map that cites EDPB
+  Opinion 8/2024 (April 2024) and tells the operator the fix path is
+  a third no-tracking option (contextual ads / first-party-only).
+- Same "verify manually" caveat as Phase 9 + 9c: a banner that links
+  to an unrelated premium tier (not a tracking opt-out) will false-
+  positive. The recommendation says so. False-positive cost is
+  acceptable for a deterministic, no-AI signal.
 
 ## Known quirks / gotchas
 

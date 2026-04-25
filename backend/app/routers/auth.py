@@ -253,11 +253,16 @@ async def delete_my_account(
     sole_owner_org_ids = await _find_sole_owner_org_ids(user_id)
 
     # --- Cancel Mollie subscriptions for orgs that are about to vanish --
+    # Only count rows that ACTUALLY had an active subscription to
+    # cancel — `cancel_org_subscription` returns
+    # {"status": "no_active_subscription"} for orgs that never paid,
+    # which is a valid no-op, not a "we cancelled something" event.
     canceled = 0
     for org_id in sole_owner_org_ids:
         try:
-            await cancel_org_subscription(org_id)
-            canceled += 1
+            result = await cancel_org_subscription(org_id)
+            if result.get("status") == "canceled":
+                canceled += 1
         except (RuntimeError, MollieError) as e:
             # RuntimeError: MOLLIE_API_KEY not configured → billing was
             # in admin-assigned-plans mode; nothing to cancel.

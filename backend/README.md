@@ -291,15 +291,17 @@ Weighted sum (must sum to 1.0):
 
 Hard caps (any that triggers limits the *final* score):
 
-| Code                                         | Cap |
-| -------------------------------------------- | --- |
-| `no_privacy_policy`                          |  30 |
-| `us_marketing_no_consent`                    |  40 |
-| `us_analytics_no_consent`                    |  50 |
-| `tdddg_non_essential_without_consent`        |  50 |
-| `no_legal_basis_stated`                      |  55 |
-| `policy_silent_on_third_country_transfer`    |  60 |
-| `tdddg_third_party_without_consent`          |  70 |
+| Code                                         | Cap | Source |
+| -------------------------------------------- | --- | --- |
+| `no_privacy_policy`                          |  30 | Art. 13/14 DSGVO |
+| `us_marketing_no_consent`                    |  40 | Art. 6 + § 25 TDDDG |
+| `pre_checked_consent_box`                    |  40 | Art. 7(2) DSGVO + EuGH C-673/17 (Planet49) |
+| `us_analytics_no_consent`                    |  50 | Art. 6 + § 25 TDDDG |
+| `tdddg_non_essential_without_consent`        |  50 | § 25 TDDDG |
+| `no_legal_basis_stated`                      |  55 | Art. 6 DSGVO |
+| `policy_missing_user_rights`                 |  55 | Art. 13(2)(b) DSGVO (deterministic DSAR check) |
+| `policy_silent_on_third_country_transfer`    |  60 | Art. 44–49 DSGVO |
+| `tdddg_third_party_without_consent`          |  70 | § 25 TDDDG (light tier) |
 
 Risk rating buckets: **80-100** low · **60-79** medium · **40-59** high ·
 **0-39** critical.
@@ -483,6 +485,60 @@ forged "id" in the body can't alter state.
 **Fully mocked in tests:** `_FakeMollieClient` in
 `tests/test_billing_mollie.py` records every method call + returns
 canned responses. No network, no real Mollie account needed for CI.
+
+## Account deletion + retention (Phase 8)
+
+Two GDPR primitives:
+
+**`DELETE /auth/me`** — Article 17 right to erasure. The user calls
+this and the system cascades: cancels Mollie subscriptions on orgs
+they solely own, deletes those orgs (which cascades to scans,
+memberships, subscription rows), then deletes the user. Audit
+entries written by that user survive — `actor_user_id` becomes NULL
+via `ON DELETE SET NULL` but `actor_email` is denormalised at write
+time so the trail stays readable.
+
+```bash
+curl -X DELETE http://localhost:8080/auth/me \
+  -H "Authorization: Bearer <token>"
+# → {"status":"deleted","deleted_user_id":"...","deleted_organization_ids":[...],
+#    "mollie_subscriptions_canceled":1}
+```
+
+The frontend is expected to follow up with `/api/auth/logout` to
+clear the auth cookie — the JWT stays cryptographically valid until
+TTL otherwise. Subsequent requests 401 anyway because
+`get_current_user` can't find the user row.
+
+**Automated retention** — runs nightly at 03:30 UTC inside the Arq
+worker (`WorkerSettings.cron_jobs`). Enforces:
+
+| Class | Default | Override env-side |
+|---|---|---|
+| Scans | 12 months | bump in `app/retention.py` (DEFAULT_SCAN_MONTHS) |
+| Audit log | 3 years | bump in `app/retention.py` (DEFAULT_AUDIT_YEARS) |
+| Orphan scans | immediate | n/a |
+
+For one-off sweeps or operator inspection:
+
+```bash
+# Dry-run — count rows that would go, delete nothing
+python -m app.cli.retention --dry-run
+
+# Tighter retention for a one-off cleanup
+python -m app.cli.retention --scan-months 6 --audit-years 1
+```
+
+The CLI shares a code path with the cron, so an interactive sweep
+behaves identically to a scheduled one.
+
+> **Important — SQLite FK enforcement.** SQLite ships with foreign-
+> key checks OFF per connection. Without `PRAGMA foreign_keys=ON`,
+> declared `ON DELETE CASCADE` / `SET NULL` silently no-op on dev
+> while Postgres in production enforces them. `app.db.install_sqlite_fk_pragma`
+> registers a connect-listener that flips it on; production wires
+> it automatically, every test fixture creating a fresh engine
+> calls it explicitly.
 
 ## System admin (Phase 4)
 
@@ -707,11 +763,15 @@ The test suite now covers scoring / consent-diff / form-analyzer /
 auth / SSRF / rate limits / runtime SSRF guards / Phase-3 async jobs /
 Phase-3b progress pub/sub + SSE / Phase-4 admin + audit / Phase-5a
 billing + quotas / Phase-5b Mollie checkout + webhook + cancel /
-Phase-7 observability (structured logs, request-id, /metrics,
-extended /health, counter ticks) / Phase-7c security.txt with 303
-unit + integration tests. All tests are pure-Python (no Playwright,
-no network, no real DNS, no real Redis, no real Mollie, no real
-Sentry) and complete in under twenty-two seconds.
+Phase-7 observability / Phase-7c security.txt / Phase-8 retention
+sweeps + GDPR Art. 17 self-deletion / Phase-9 EuGH Planet49
+pre-checked consent detection / Phase-9c tracking-pixel beacon
+detection / Phase-9d deterministic DSAR check (Art. 13(2)(b)) /
+Phase-9e cookie-wall "Pay or Okay" detection (EDPB Opinion 8/2024)
+with 397 unit + integration tests.
+All tests are pure-Python (no Playwright, no network, no real DNS,
+no real Redis, no real Mollie, no real Sentry) and complete in
+under twenty-five seconds.
 
 ```powershell
 # Inside the backend venv

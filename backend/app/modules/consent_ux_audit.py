@@ -33,6 +33,7 @@ from app.modules.consent_clicker import (
     CMP_REJECT_SELECTORS,
     CMP_SELECTORS,
 )
+from app.modules.cookie_wall_detector import detect_cookie_wall
 
 
 log = logging.getLogger("consent_ux_audit")
@@ -288,6 +289,46 @@ def _analyze(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+# Walk up from the accept button until we hit a "container-shaped"
+# ancestor (role=dialog, modal-ish class, or just N levels up), then
+# return its visible text. Capped so we don't ship the entire DOM.
+_BANNER_TEXT_JS = """
+(accept) => {
+    if (!accept) return null;
+    let node = accept;
+    let container = node;
+    // Climb at most 8 levels — beyond that we're almost certainly in
+    // <body>, which is bigger than we want to scan.
+    for (let i = 0; i < 8 && node && node.parentElement; i++) {
+        node = node.parentElement;
+        const role = node.getAttribute && node.getAttribute('role');
+        const cls  = (node.className && node.className.toString && node.className.toString()) || '';
+        if (
+            role === 'dialog' ||
+            role === 'alertdialog' ||
+            /cookie|consent|banner|cmp|privacy|gdpr/i.test(cls) ||
+            /cookie|consent|banner|cmp|privacy|gdpr/i.test(node.id || '')
+        ) {
+            container = node;
+            break;
+        }
+        container = node;
+    }
+    const txt = (container.innerText || container.textContent || '').trim();
+    return txt.slice(0, 2000);
+}
+"""
+
+
+async def _extract_banner_text(page: Page, accept_handle: ElementHandle) -> str | None:
+    try:
+        text = await page.evaluate(_BANNER_TEXT_JS, accept_handle)
+        return text if isinstance(text, str) and text else None
+    except Exception as e:
+        log.debug("banner text extraction failed: %s", e)
+        return None
+
+
 async def audit_consent_ux(page: Page) -> ConsentUxAudit:
     """Audit the consent banner on ``page`` without clicking anything.
 
@@ -326,6 +367,16 @@ async def audit_consent_ux(page: Page) -> ConsentUxAudit:
         viewport_height=vh,
     )
 
+    # Phase 9e: pull the banner text and run the cookie-wall check.
+    # A non-None DarkPatternFinding gets appended to the same findings
+    # list — the existing consent_dark_pattern_high (cap 45) hard cap
+    # picks it up automatically because severity="high".
+    banner_text = await _extract_banner_text(page, accept_handle)
+    if banner_text:
+        cookie_wall = detect_cookie_wall(banner_text)
+        if cookie_wall is not None:
+            findings.append(cookie_wall)
+
     return ConsentUxAudit(
         banner_detected=True,
         cmp=cmp_name,
@@ -335,4 +386,5 @@ async def audit_consent_ux(page: Page) -> ConsentUxAudit:
         findings=findings,
         accept_metrics=accept_metrics,
         reject_metrics=reject_metrics,
+        banner_text=banner_text,
     )

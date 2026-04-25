@@ -187,7 +187,7 @@ function Results({ result }: { result: ScanResponse }) {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <CookiesSection report={result.cookies} />
-        <DataFlowTable flow={result.network.data_flow} />
+        <DataFlowTable network={result.network} />
       </div>
 
       {result.consent && <ConsentSection consent={result.consent} />}
