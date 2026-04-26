@@ -87,6 +87,11 @@ class ScanRequest(BaseModel):
     # English for CLI / API users; the dashboard always sends its current
     # language.
     ui_language: UiLanguage = "en"
+    # Phase 11: opt-in performance audit (Web Vitals + network metrics +
+    # asset audit). Off by default because it adds 2-5s per scan and
+    # is informational rather than compliance-relevant. Premium plans
+    # may flip this to default-true at the API layer later.
+    performance_audit: bool = False
 
 
 class FormField(BaseModel):
@@ -155,6 +160,15 @@ class NetworkRequest(BaseModel):
     # specific remediation hook (Conversions API / server-side events)
     # rather than the generic "third-party tracker contacted" finding.
     is_tracking_pixel: bool = False
+    # Phase 11 — performance fields. All optional / default None so the
+    # GDPR-only path stays unchanged: we only fill these when
+    # performance_audit is requested AND the response actually arrived.
+    # response_size is the on-the-wire transferred bytes (Content-Length
+    # if announced, else `len(body)` after gunzip). content_encoding is
+    # the verbatim header value (e.g. "br", "gzip", "identity") so the
+    # asset audit can flag responses without compression.
+    response_size: int | None = None
+    content_encoding: str | None = None
 
 
 class DataFlowEntry(BaseModel):
@@ -174,9 +188,44 @@ class CrawlResult(BaseModel):
                                        # found via crawl or common-path probing.
 
 
+class GoogleFontsCheck(BaseModel):
+    """Phase 10 — deterministic detection of Google Fonts loaded from
+    Google's servers (fonts.googleapis.com / fonts.gstatic.com).
+
+    Confirmed GDPR violation under LG München I 3 O 17493/20 (20.01.2022),
+    which awarded €100 immaterial damages against the operator. The court
+    held that transmitting the visitor's IP to Google during font loading
+    constitutes an unjustified third-country transfer when the fonts
+    could trivially be self-hosted.
+
+    The check is pure + structured so the dashboard can show *which*
+    families were loaded (auditor evidence) without re-walking the raw
+    request list.
+    """
+    detected: bool = False
+    # Font families parsed from googleapis.com URLs
+    # (e.g. ?family=Roboto|Open+Sans:300,400 → ["Roboto", "Open Sans"]).
+    # Empty when only gstatic.com binaries were observed (CSS loaded
+    # from cache or via a non-fonts.googleapis.com path).
+    families: list[str] = []
+    # Total number of binary requests to fonts.gstatic.com — useful as a
+    # severity signal (one font ≠ the whole site is in violation).
+    binary_count: int = 0
+    # Pages that initiated at least one Google-Fonts request. Helps the
+    # auditor target the fix to specific templates.
+    initiator_pages: list[str] = []
+    # Up to three example URLs for evidence. Trimmed because a real
+    # site can fire dozens of /css and /s/* loads per page.
+    css_url_samples: list[str] = []
+
+
 class NetworkResult(BaseModel):
     requests: list[NetworkRequest]
     data_flow: list[DataFlowEntry]
+    # Phase 10: structured Google-Fonts-loaded-externally signal.
+    # Default empty (detected=False) so callers that don't run the
+    # detector still produce valid responses.
+    google_fonts: GoogleFontsCheck = GoogleFontsCheck()
 
 
 class CookieEntry(BaseModel):
@@ -459,6 +508,18 @@ class HardCap(BaseModel):
     code: str                          # machine-readable identifier (snake_case)
     description: str                   # one-line plain-English explanation
     cap_value: int = Field(ge=0, le=100)
+    # Sub-score names this cap is conceptually rooted in. Caps don't
+    # apply per-sub-score in the scoring engine (they pull down the
+    # FINAL weighted score), but each cap is triggered by a finding
+    # that lives in a specific GDPR domain — so the dashboard can show
+    # "this 50/100 sub-score is what dragged the final score down,
+    # here's the cap that fired". Allowed values are sub-score names
+    # ("cookies", "tracking", "data_transfer", "privacy", "forms").
+    # Empty list means the cap is cross-cutting (e.g. security caps
+    # whose domain isn't represented as a sub-score). Default empty
+    # so historical scans loaded from the DB pre-Phase-Caps don't
+    # error on field absence.
+    affected_subscores: list[str] = []
 
 
 class Recommendation(BaseModel):
@@ -529,6 +590,88 @@ class ConsentSimulation(BaseModel):
     ux_audit: ConsentUxAudit | None = None         # dark-pattern audit of the banner itself
 
 
+# ---------------------------------------------------------------------------
+# Phase 11 — Performance suite (opt-in, gated by ScanRequest.performance_audit).
+# Deliberately KEPT SEPARATE from the GDPR risk score: performance is not a
+# compliance question. The score below is informational and uses a linear
+# 0-100 scale with NO hard caps — every point of deduction is metric-anchored
+# so an auditor can read it back ("score is 62 because LCP=3.4s and 14 of 23
+# JS responses lack compression"). Cross-contamination with the GDPR score
+# would dilute both reports' meaning.
+# ---------------------------------------------------------------------------
+
+class WebVitals(BaseModel):
+    """Core Web Vitals + the two supporting paint metrics.
+
+    All fields optional because the PerformanceObserver may miss entries
+    (no layout shifts, no input events, fast load with no LCP candidate).
+    Times are in **milliseconds**; CLS is unitless.
+    """
+    lcp_ms: float | None = None         # Largest Contentful Paint
+    inp_ms: float | None = None         # Interaction to Next Paint (approx via long-tasks)
+    cls: float | None = None            # Cumulative Layout Shift (unitless score)
+    fcp_ms: float | None = None         # First Contentful Paint
+    ttfb_ms: float | None = None        # Time to First Byte (navigation timing)
+
+
+class RenderBlockingResource(BaseModel):
+    """A resource that delayed first paint."""
+    url: str
+    resource_type: str                  # "script" / "stylesheet"
+    size_bytes: int | None = None       # transferred bytes if captured
+
+
+class OversizedAsset(BaseModel):
+    """An asset whose transferred size exceeds the per-type budget."""
+    url: str
+    resource_type: str                  # "image" / "script" / "stylesheet" / "font"
+    size_bytes: int
+    threshold_bytes: int                # the budget this asset blew through
+
+
+class UncompressedResponse(BaseModel):
+    """A text-shaped response delivered without HTTP compression."""
+    url: str
+    resource_type: str                  # "script" / "stylesheet" / "document" / "xhr"
+    size_bytes: int
+    content_encoding: str | None        # verbatim header value (None / "identity")
+
+
+class NetworkMetrics(BaseModel):
+    """Aggregated network footprint of the page load."""
+    total_requests: int = 0
+    total_transfer_bytes: int = 0
+    requests_by_type: dict[str, int] = {}     # "script" -> 12, "image" -> 34, …
+    bytes_by_type: dict[str, int] = {}
+    third_party_request_count: int = 0
+    third_party_transfer_bytes: int = 0
+    render_blocking: list[RenderBlockingResource] = []
+
+
+class AssetAudit(BaseModel):
+    """Per-asset opportunities for byte-shaving."""
+    oversized_images: list[OversizedAsset] = []
+    oversized_scripts: list[OversizedAsset] = []
+    uncompressed_responses: list[UncompressedResponse] = []
+
+
+class PerformanceReport(BaseModel):
+    """Full Phase-11 performance report. Attached to ``ScanResponse.performance``
+    only when ``ScanRequest.performance_audit`` was true.
+
+    ``score`` is a linear 0-100 (higher = better), computed in
+    ``modules.performance.scoring.score_performance``. NO hard caps; every
+    point is traceable to a specific metric so the dashboard can render
+    the breakdown without an explanation modal.
+    """
+    web_vitals: WebVitals = WebVitals()
+    network_metrics: NetworkMetrics = NetworkMetrics()
+    asset_audit: AssetAudit = AssetAudit()
+    score: int = Field(ge=0, le=100, default=100)
+    score_breakdown: dict[str, int] = {}      # "lcp" -> deducted points, etc.
+    error: str | None = None                  # populated when audit could not run
+
+
 class ScanResponse(BaseModel):
     target: str
     risk: RiskScore
@@ -542,6 +685,9 @@ class ScanResponse(BaseModel):
     security: SecurityAudit | None = None
     vulnerable_libraries: VulnerableLibrariesReport | None = None
     consent: ConsentSimulation | None = None
+    # Phase 11 — opt-in; None when performance_audit was false (or the
+    # audit step itself raised before producing a partial report).
+    performance: PerformanceReport | None = None
     # Populated by storage.save_scan(). Not set during scan execution.
     id: str | None = None
     created_at: str | None = None

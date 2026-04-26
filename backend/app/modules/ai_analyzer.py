@@ -57,6 +57,21 @@ SYSTEM_PROMPT_TEMPLATE = """\
 You are a senior EU data-protection auditor and privacy lawyer. You review
 website privacy policies for GDPR (DSGVO) compliance.
 
+OUTPUT LANGUAGE — HARD REQUIREMENT (read this first, follow it last).
+The user is reading the report in {summary_language_name}
+({summary_language_code}). EVERY natural-language string you emit —
+`summary`, every `issues[].description`, every `issues[].action_steps`
+entry — MUST be written in {summary_language_name}. Do NOT default to
+English just because the evidence blocks (data-flow URLs, domain
+names) are English-formatted. Do NOT switch to the policy's language
+for these fields. The two specific exceptions are:
+  - `suggested_text` follows the POLICY's own language (so the operator
+    can paste it directly into their existing policy);
+  - `suggested_code` is language-agnostic (programming code).
+This is the most common failure mode of past runs and the one that
+auditors notice immediately. Re-check every string before finalising
+the JSON.
+
 CORE PRINCIPLE — DO NOT TRUST THE POLICY.
 Always verify what the policy CLAIMS against what the site ACTUALLY DOES
 (the evidence block in the user message lists every third-party domain the
@@ -129,6 +144,48 @@ General rules:
 - Output strict JSON matching the schema in the user message. No prose
   outside the JSON. No markdown fences. No explanatory text before or
   after the JSON object.
+
+AUDIENCE-SAFETY RULE (critical to prevent liability traps in
+`suggested_text`):
+- Read the SITE CONTEXT block in the user message before drafting any
+  policy paragraph. The hostname and page title carry a strong signal
+  about who the site is for (e.g. "adhs-spezialambulanz.de" + title
+  "ADHS Spezialambulanz für Kinder" = a paediatric ADHD clinic; data
+  about minors is in scope by definition).
+- If the SITE CONTEXT suggests the site processes data of MINORS,
+  PATIENTS, EMPLOYEES, or another specific population, your
+  `suggested_text` MUST reflect that — never default to the generic
+  "we do not collect data of children / patients / employees"
+  boilerplate, which becomes a liability trap when wrong.
+- If the SITE CONTEXT is ambiguous about the audience, write the
+  `suggested_text` as a CONDITIONAL paragraph that explicitly names
+  the assumption ("Sofern Sie Daten von minderjährigen Patienten
+  erheben, gilt: …" / "If you process data of minors, the following
+  applies: …"). NEVER write an unconditional negative claim about a
+  population the site might in fact serve.
+
+STRICT VERIFICATION (companion rule — prevents the OPPOSITE failure
+mode where SITE CONTEXT alone is treated as 'addressed'):
+- When the SITE CONTEXT indicates a vulnerable population is in the
+  site's audience (minors, patients, employees, jobseekers, …), you
+  MUST verify the POLICY TEXT itself contains an explicit passage on
+  HOW that population's data is handled. Concrete markers to look
+  for: parental-consent language (Art. 8 DSGVO / Art. 8 GDPR),
+  special-category data clauses (Art. 9 DSGVO — Gesundheitsdaten,
+  biometrische Daten), employer-specific bases (§ 26 BDSG), etc.
+- Absence of such an explicit passage is a HIGH-severity
+  `missing_section` issue. Set
+  `coverage.children_data_addressed = false` (or the analogous
+  coverage flag for patients / employees) when the policy does not
+  contain such a passage — even if the site clearly serves that
+  population. Audience presence in SITE CONTEXT is NEVER sufficient
+  on its own to flip a coverage flag to true; only explicit policy
+  text content does that.
+- Concretely: a paediatric clinic whose policy says nothing about
+  Art. 8 / parental consent / special-category health data IS
+  missing the children's section, and the finding's
+  `suggested_text` MUST be the audience-aware draft (per the
+  rule above), not the negative boilerplate.
 """
 
 
@@ -146,8 +203,22 @@ def _system_prompt_for(lang: UiLanguage) -> str:
 
 
 USER_PROMPT_TEMPLATE = """\
+RESPONSE LANGUAGE: {summary_language_name} ({summary_language_code})
+— write `summary`, all `issues[].description`, and all
+`issues[].action_steps` strictly in this language. `suggested_text`
+follows the policy's own language. See system prompt for full rule.
+
 Review this website's privacy policy against GDPR (Articles 12-14 in
 particular) AND against the observed live-site behavior.
+
+SITE CONTEXT — what this website is. Use this to ground audience-
+sensitive drafts (children, patients, employees, …) per the audience-
+safety rule in the system message. Hostnames and titles often encode
+the audience explicitly (e.g. "kinderpraxis.de", "ADHS Spezialambulanz
+für Kinder", "B2B HR Software"); when they do, your `suggested_text`
+MUST reflect it.
+
+{site_context_summary}
 
 POLICY URL: {policy_url}
 IMPRINT URL: {imprint_url}
@@ -224,6 +295,27 @@ no prose, no markdown fences):
 """
 
 
+def _format_site_context(site_context: dict[str, str] | None) -> str:
+    """Render the SITE CONTEXT block.
+
+    Accepts a small dict (kept loose so the caller doesn't need a
+    dedicated Pydantic model) with keys ``hostname`` (required) and
+    optional ``page_title`` / ``target_url``. Missing optional fields
+    render as ``(unknown)`` — the model still gets the hostname which
+    is itself a strong audience signal in most cases.
+    """
+    if not site_context:
+        return "(no site context provided)"
+    hostname = site_context.get("hostname") or "(unknown)"
+    title = site_context.get("page_title") or "(no title tag)"
+    target = site_context.get("target_url") or hostname
+    return (
+        f"- Hostname: {hostname}\n"
+        f"- Homepage title: {title}\n"
+        f"- Scanned URL: {target}"
+    )
+
+
 def _format_data_flow(data_flow: list[DataFlowEntry]) -> str:
     if not data_flow:
         return "(none observed)"
@@ -289,6 +381,7 @@ class AIProvider(ABC):
         imprint_url: str | None = None,
         widgets: list[ThirdPartyWidget] | None = None,
         lang: UiLanguage = "en",
+        site_context: dict[str, str] | None = None,
     ) -> PrivacyAnalysis: ...
 
 
@@ -305,6 +398,7 @@ class NoOpProvider(AIProvider):
         imprint_url: str | None = None,
         widgets: list[ThirdPartyWidget] | None = None,
         lang: UiLanguage = "en",
+        site_context: dict[str, str] | None = None,
     ) -> PrivacyAnalysis:
         return PrivacyAnalysis(
             provider="none",
@@ -354,12 +448,16 @@ class _OpenAILikeProvider(AIProvider):
         imprint_url: str | None = None,
         widgets: list[ThirdPartyWidget] | None = None,
         lang: UiLanguage = "en",
+        site_context: dict[str, str] | None = None,
     ) -> PrivacyAnalysis:
         messages = [
             {"role": "system", "content": _system_prompt_for(lang)},
             {
                 "role": "user",
                 "content": USER_PROMPT_TEMPLATE.format(
+                    summary_language_name=_LANG_NAME.get(lang, "English"),
+                    summary_language_code=lang,
+                    site_context_summary=_format_site_context(site_context),
                     policy_url=policy_url or "(unknown)",
                     imprint_url=imprint_url or "(not located)",
                     data_flow_summary=_format_data_flow(data_flow),

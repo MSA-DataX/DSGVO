@@ -51,6 +51,8 @@ from app.modules.cookie_scanner import build_report
 from app.modules.crawler import Crawler
 from app.modules.form_analyzer import analyze_forms
 from app.modules.network_analyzer import NetworkAnalyzer
+from app.modules.performance.audit import run_performance_audit
+from app.modules.performance.web_vitals import collect_web_vitals, install_web_vitals
 from app.modules.policy_extractor import (
     fetch_policy_text,
     probe_common_paths,
@@ -293,8 +295,14 @@ async def run_scan(
                 java_script_enabled=True,
             )
             await _install_ssrf_guard(pre_ctx)
+            # Phase 11: install Web Vitals observer on the context BEFORE
+            # any page is opened — `add_init_script` only fires for pages
+            # created after registration.
+            if req.performance_audit:
+                await install_web_vitals(pre_ctx)
             pre_analyzer = NetworkAnalyzer(first_party_url=target)
             pre_analyzer.attach(pre_ctx)
+            web_vitals = None
             try:
                 pre, _, _ = await _run_pass(
                     target=target, context=pre_ctx, analyzer=pre_analyzer,
@@ -304,6 +312,21 @@ async def run_scan(
                         str(req.privacy_policy_url) if req.privacy_policy_url else None
                     ),
                 )
+                # Phase 11: dedicated harvest page so the observers run
+                # on a clean, single navigation rather than whatever the
+                # crawler happened to leave behind. ~3-5s wait window
+                # inside collect_web_vitals.
+                if req.performance_audit:
+                    p.emit("form_analysis", "Collecting Core Web Vitals…")
+                    harvest_page = await pre_ctx.new_page()
+                    try:
+                        try:
+                            await harvest_page.goto(target, wait_until="load", timeout=30000)
+                        except Exception:
+                            log.exception("web vitals harvest navigation failed")
+                        web_vitals = await collect_web_vitals(harvest_page)
+                    finally:
+                        await harvest_page.close()
             finally:
                 await pre_ctx.close()
 
@@ -370,6 +393,20 @@ async def run_scan(
             "sri_missing": len(security.sri_missing),
             "security_txt": bool(security.security_txt_url),
             "dmarc_policy": security.dns.dmarc_policy if security.dns else "missing"})
+
+    # --- Phase 10: Google-Fonts-loaded-externally check -----------------
+    # Pure-function pass over the captured network; structured output
+    # (which families, which pages, sample URLs) lands on the network
+    # result so the dashboard can render evidence without re-walking
+    # the request list. Independent of AI provider — runs always.
+    from app.modules.google_fonts_detector import detect_google_fonts
+    pre.network.google_fonts = detect_google_fonts(pre.network)
+    if pre.network.google_fonts.detected:
+        p.emit("form_analysis",
+               f"Google Fonts loaded externally: {len(pre.network.google_fonts.families)} family/families, "
+               f"{pre.network.google_fonts.binary_count} binary request(s)",
+               {"families": pre.network.google_fonts.families,
+                "binary_count": pre.network.google_fonts.binary_count})
 
     # --- vulnerable JS libraries (Retire.js-style) ----------------------
     vulnerable_libs = detect_vulnerable_libraries(pre.network)
@@ -466,6 +503,20 @@ async def run_scan(
             "caps": len(risk.applied_caps),
             "recommendations": len(risk.recommendations)})
 
+    # Phase 11: build the performance report from the captured network +
+    # the harvested web vitals. Gated by the same opt-in flag that armed
+    # the observers above; if the flag is off, web_vitals is None and we
+    # leave performance=None on the response.
+    performance_block = None
+    if req.performance_audit:
+        performance_block = run_performance_audit(pre.network, web_vitals)
+        p.emit("scoring",
+               f"Performance score: {performance_block.score}/100",
+               {"score": performance_block.score,
+                "lcp_ms": performance_block.web_vitals.lcp_ms,
+                "cls": performance_block.web_vitals.cls,
+                "transfer_bytes": performance_block.network_metrics.total_transfer_bytes})
+
     return ScanResponse(
         target=target, risk=risk,
         crawl=pre.crawl, network=pre.network, cookies=pre.cookies,
@@ -474,6 +525,7 @@ async def run_scan(
         security=security,
         vulnerable_libraries=vulnerable_libs,
         consent=consent_block,
+        performance=performance_block,
     )
 
 
@@ -489,6 +541,17 @@ async def _run_ai_analysis(
     widget_list = widgets.widgets if widgets else []
     if pre.policy_text:
         excerpt, _ = truncate_for_model(pre.policy_text, settings.ai_max_policy_chars)
+        # Audience-safety context for the AI: hostname + homepage title
+        # carry the strongest signal about WHO the site is for. Without
+        # this, generic boilerplate ("we don't process children's data")
+        # gets emitted on a paediatric clinic — a liability trap.
+        # See ai_analyzer SYSTEM_PROMPT_TEMPLATE "AUDIENCE-SAFETY RULE".
+        homepage = pre.crawl.pages[0] if pre.crawl.pages else None
+        site_context = {
+            "hostname": urlparse(pre.crawl.start_url).hostname or "(unknown)",
+            "page_title": (homepage.title if homepage and homepage.title else ""),
+            "target_url": pre.crawl.start_url,
+        }
         p.emit("ai_analysis",
                f"Sending policy text to {ai_provider.name} for GDPR review…",
                {"provider": ai_provider.name, "lang": lang})
@@ -498,6 +561,7 @@ async def _run_ai_analysis(
                 data_flow=pre.network.data_flow, chars_sent=pre.chars_sent,
                 channels=channel_list, imprint_url=imprint_url,
                 widgets=widget_list, lang=lang,  # type: ignore[arg-type]
+                site_context=site_context,
             )
             p.emit("ai_analysis",
                    f"AI analysis complete — compliance score {analysis.compliance_score}/100",

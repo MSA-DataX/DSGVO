@@ -25,7 +25,6 @@ score uses the same scale and is bucketed into a 4-tier risk rating.
 from __future__ import annotations
 
 import time
-from urllib.parse import urlparse
 
 from app.models import (
     ConsentSimulation,
@@ -251,19 +250,78 @@ def _score_forms(forms: FormReport) -> SubScore:
 # Hard caps
 # ---------------------------------------------------------------------------
 
-def _has_external_google_fonts(network: NetworkResult) -> bool:
-    """Detect requests to Google's font servers.
-
-    ``fonts.googleapis.com`` (CSS loader) and ``fonts.gstatic.com`` (the
-    actual font binaries) are the exact hostnames flagged by LG München I
-    in its 2022 ruling — loading either from Google is a confirmed GDPR
-    violation under that case law, cap required.
-    """
-    for r in network.requests:
-        host = (urlparse(r.url).hostname or "").lower()
-        if host in ("fonts.googleapis.com", "fonts.gstatic.com"):
-            return True
-    return False
+# ---------------------------------------------------------------------------
+# Cap → sub-score routing
+# ---------------------------------------------------------------------------
+#
+# Every named hard cap is conceptually rooted in one or two sub-scores —
+# the GDPR-domain whose finding triggered it. The scoring engine itself
+# applies caps to the FINAL weighted score, not per sub-score, but the
+# dashboard reads `applied_subscores` to render "this Tracking score of
+# 50/100 is what dragged the final score down via cap X" badges.
+#
+# Allowed sub-score names: cookies / tracking / data_transfer / privacy /
+# forms — matching the names emitted by the _score_* sub-score functions.
+#
+# Empty tuple = cross-cutting (security caps whose domain is not a
+# sub-score). Those caps still appear in the HardCapsList card but get
+# no per-sub-score badge.
+#
+# CONVENTION #1 (no duplicated domain knowledge): a new cap added in
+# _compute_caps MUST have an entry here; the test
+# tests/test_scoring.py::TestCapAffectsMapping verifies coverage at
+# import time so a forgotten entry breaks CI rather than degrading
+# silently to "no badge anywhere".
+_CAP_AFFECTS: dict[str, tuple[str, ...]] = {
+    # Pre-consent tracking — affects both the tracking sub-score (the
+    # tracker fired) AND data_transfer (the actual cross-border hop).
+    "us_analytics_no_consent":                ("tracking", "data_transfer"),
+    "us_marketing_no_consent":                ("tracking", "data_transfer"),
+    # § 25 TDDDG: non-essential = analytics/marketing, so tracking +
+    # cookies (the access to terminal storage IS the violation).
+    "tdddg_non_essential_without_consent":    ("tracking", "cookies"),
+    # § 25 TDDDG light variant: third-party CDN/font load — strictly a
+    # data_transfer concern, no analytics/marketing intent assumed.
+    "tdddg_third_party_without_consent":      ("data_transfer",),
+    # Privacy-policy issues — pure privacy sub-score domain.
+    "no_privacy_policy":                      ("privacy",),
+    "no_legal_basis_stated":                  ("privacy",),
+    "policy_missing_user_rights":             ("privacy",),
+    # § 5 TMG Impressum sits with privacy/legal in our taxonomy.
+    "no_imprint":                             ("privacy",),
+    # Cross-cuts: the policy fails to disclose a transfer that DID
+    # happen → both privacy (disclosure failure) and data_transfer
+    # (the unsanctioned transfer).
+    "policy_silent_on_third_country_transfer": ("privacy", "data_transfer"),
+    # Google Fonts (LG München I 2022): the legal anchor is the IP
+    # transfer to Google US (data_transfer); the secondary effect is
+    # the cookie/storage Google may set (cookies).
+    "google_fonts_external":                  ("data_transfer", "cookies"),
+    # Third-party widgets: tracking via the embedded vendor + transfer
+    # of viewer data to the vendor's origin.
+    "embed_or_chat_without_consent":          ("tracking", "data_transfer"),
+    "map_embed_without_consent":              ("tracking", "data_transfer"),
+    # Contact channels (WhatsApp/Meta/TikTok…): primarily a transfer
+    # issue + the policy didn't disclose it.
+    "contact_channel_transfer_not_disclosed": ("data_transfer", "privacy"),
+    # Consent-banner dark patterns: invalid consent ⇒ everything that
+    # loaded after it is unsanctioned tracking + cookies.
+    "consent_dark_pattern_high":              ("tracking", "cookies"),
+    "consent_dark_pattern_medium":            ("tracking", "cookies"),
+    # Planet49 pre-checked consent: lives in forms (the form is the
+    # locus of the violation) and cookies (the cookies the form
+    # implicitly authorises are not validly consented).
+    "pre_checked_consent_box":                ("forms", "cookies"),
+    # Security caps — Art. 32 / TOM territory, no corresponding
+    # sub-score in the current weighted model. Empty tuples by design.
+    "no_https_enforcement":                   (),
+    "mixed_content":                          (),
+    "cert_expired":                           (),
+    "cert_expiring_soon":                     (),
+    "no_email_authentication":                (),
+    "known_vulnerable_library":               (),
+    "outdated_vulnerable_library":            (),
+}
 
 
 def _has_consent_cmp(cookies: CookieReport) -> bool:
@@ -385,15 +443,25 @@ def _compute_caps(
             cap_value=50,
         ))
 
-    # Google Fonts loaded externally from google.com servers is a confirmed
-    # GDPR violation under LG München I 2022. The ruling specifically
-    # condemned the unnecessary transmission of user IP addresses to Google
-    # — easy to fix (self-host fonts) and hard to defend.
-    if _has_external_google_fonts(network):
+    # Phase 10: Google Fonts loaded externally from Google's servers is a
+    # confirmed GDPR violation under LG München I 3 O 17493/20 (Jan 2022).
+    # The ruling specifically condemned the unnecessary transmission of
+    # user IP addresses to Google — trivially fixable by self-hosting the
+    # fonts. Cap aligned with `policy_missing_user_rights` (55) — same
+    # tier of black-letter Art. 13/Art. 44 ff. failure that German DPAs
+    # treat as a routine compliance finding rather than a fringe issue.
+    if network.google_fonts.detected:
         caps.append(HardCap(
             code="google_fonts_external",
-            description="Site loads Google Fonts from Google's servers (fonts.googleapis.com / fonts.gstatic.com). Under LG München I ruling (2022) this is a GDPR violation — self-host the fonts instead.",
-            cap_value=65,
+            description=(
+                f"Site loads Google Fonts from Google's servers "
+                f"(fonts.googleapis.com / fonts.gstatic.com): "
+                f"{len(network.google_fonts.families)} family/families, "
+                f"{network.google_fonts.binary_count} binary request(s). "
+                f"LG München I 3 O 17493/20 (20.01.2022) ruled this a "
+                f"GDPR violation — self-host the fonts instead."
+            ),
+            cap_value=55,
         ))
 
     # Third-party widgets (YouTube in tracking mode, Google Maps, chat
@@ -587,6 +655,17 @@ def _compute_caps(
                 ),
                 cap_value=40,
             ))
+
+    # Post-hoc enrichment: stamp `affected_subscores` from the central
+    # _CAP_AFFECTS map. Done once at the end so every HardCap(...) call
+    # site above stays minimal — adding a new cap is one append + one
+    # entry in _CAP_AFFECTS, no per-site keyword to remember. Codes
+    # missing from the map fall through to an empty list and surface
+    # in the dashboard's HardCapsList card without a per-sub-score
+    # badge — see test_scoring.py::TestCapAffectsMapping for the
+    # coverage check that breaks CI on a forgotten entry.
+    for c in caps:
+        c.affected_subscores = list(_CAP_AFFECTS.get(c.code, ()))
 
     return caps
 
@@ -1310,25 +1389,41 @@ def _build_recommendations(
 
     # --- Google Fonts (LG München I 2022) ------------------------------
     if "google_fonts_external" in cap_codes:
+        gf = network.google_fonts
+        # Stitch the structured detector output into the prose so the
+        # operator gets concrete remediation targets (which families to
+        # mirror, which page to start with) without opening the raw
+        # network panel. Falls back gracefully when only gstatic.com hits
+        # were captured (CSS cached upstream, families unparseable).
+        families_str = ", ".join(gf.families[:5]) if gf.families else "—"
+        more_fams_en = f" (+{len(gf.families) - 5} more)" if len(gf.families) > 5 else ""
+        more_fams_de = f" (+{len(gf.families) - 5} weitere)" if len(gf.families) > 5 else ""
+        sample_page = gf.initiator_pages[0] if gf.initiator_pages else None
+        page_hint_en = f" First seen on: {sample_page}." if sample_page else ""
+        page_hint_de = f" Erstmals beobachtet auf: {sample_page}." if sample_page else ""
         recs.append(Recommendation(
             priority="high",
             title=_t(lang,
                 "Self-host your fonts instead of loading from Google",
                 "Schriften selbst hosten statt von Google zu laden"),
             detail=_t(lang,
-                "Google Fonts requests transmit the visitor's IP to Google (USA) without consent. "
-                "LG München I (Az. 3 O 17493/20, 20.01.2022) ruled this a GDPR violation and "
-                "awarded damages against the operator. Fix: download the font files once, serve "
-                "them from your own origin (e.g. via @font-face with local .woff2 files), drop "
-                "the <link> to fonts.googleapis.com. Tools like google-webfonts-helper automate "
-                "this in under a minute.",
-                "Google-Fonts-Requests übermitteln die IP des Besuchers ohne Einwilligung an "
-                "Google (USA). Das LG München I (Az. 3 O 17493/20, 20.01.2022) stufte dies als "
-                "DSGVO-Verstoß ein und sprach Schadensersatz gegen den Betreiber zu. Fix: "
-                "Schriftdateien einmal herunterladen, aus eigener Origin ausliefern (z.B. per "
-                "@font-face mit lokalen .woff2-Dateien), <link> zu fonts.googleapis.com "
-                "entfernen. Tools wie google-webfonts-helper automatisieren das in unter einer "
-                "Minute."),
+                f"Google Fonts requests transmit the visitor's IP to Google (USA) without "
+                f"consent. LG München I (Az. 3 O 17493/20, 20.01.2022) ruled this a GDPR "
+                f"violation and awarded €100 immaterial damages against the operator. "
+                f"Detected families: {families_str}{more_fams_en} ({gf.binary_count} binary "
+                f"download(s) from fonts.gstatic.com).{page_hint_en} Fix: download the font "
+                f"files once, serve them from your own origin (e.g. via @font-face with local "
+                f".woff2 files), drop the <link> to fonts.googleapis.com. Tools like "
+                f"google-webfonts-helper (gwfh.mranftl.com) automate this in under a minute.",
+                f"Google-Fonts-Requests übermitteln die IP des Besuchers ohne Einwilligung an "
+                f"Google (USA). Das LG München I (Az. 3 O 17493/20, 20.01.2022) stufte dies "
+                f"als DSGVO-Verstoß ein und sprach 100 EUR immateriellen Schadensersatz "
+                f"gegen den Betreiber zu. Erkannte Schriften: {families_str}{more_fams_de} "
+                f"({gf.binary_count} Binary-Download(s) von fonts.gstatic.com).{page_hint_de} "
+                f"Fix: Schriftdateien einmal herunterladen, aus eigener Origin ausliefern "
+                f"(z.B. per @font-face mit lokalen .woff2-Dateien), <link> zu "
+                f"fonts.googleapis.com entfernen. Tools wie google-webfonts-helper "
+                f"(gwfh.mranftl.com) automatisieren das in unter einer Minute."),
             related=["google_fonts_external"],
         ))
 

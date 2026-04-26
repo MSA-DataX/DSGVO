@@ -23,9 +23,11 @@ import { ContactChannelsSection } from "@/components/scan/ContactChannelsSection
 import { ThirdPartyWidgetsSection } from "@/components/scan/ThirdPartyWidgetsSection";
 import { SecurityAuditSection } from "@/components/scan/SecurityAuditSection";
 import { VulnerableLibrariesSection } from "@/components/scan/VulnerableLibrariesSection";
+import { PerformanceCard } from "@/components/scan/PerformanceCard";
 import { PrivacyAnalysisCard } from "@/components/scan/PrivacyAnalysisCard";
 import { FormsSection } from "@/components/scan/FormsSection";
 import { ChapterHeader } from "@/components/scan/ChapterHeader";
+import { Hero } from "@/components/home/Hero";
 import { getScan, streamScanAuto } from "@/lib/api";
 import type { ProgressEvent, ScanResponse } from "@/lib/types";
 
@@ -47,6 +49,7 @@ export default function Home() {
       max_pages: number;
       consent_simulation: boolean;
       privacy_policy_url?: string;
+      performance_audit: boolean;
     },
   ) {
     abortRef.current?.abort();
@@ -92,28 +95,36 @@ export default function Home() {
 
   return (
     <RequireAuth>
-    <main className="container mx-auto max-w-6xl py-8">
-      <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        {/* Logo lives in public/logo.png (the dark banner artwork). Has its own
-            background baked into the image, so it sits as a branded block next
-            to the product title rather than bleeding into the page. */}
-        <img
-          src="/logo.png"
-          alt="MSA DataX"
-          className="h-12 w-auto rounded-md"
-        />
-        <div className="flex items-start gap-4 sm:text-right">
-          <div className="flex-1">
-            <h1 className="text-xl font-semibold">{t("app.title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("app.subtitle")}</p>
+    <main className="container mx-auto max-w-6xl px-4 py-8">
+      {/* Sticky-Header — kompakt: kleines Logo + Wordmark + Mini-Badge
+          links, Sprachwahl + UserMenu-Dropdown rechts. Tech-Subtitle ist
+          weg, der gehört in den Hero darunter (Outcome-Sprache). */}
+      <header className="mb-8 flex items-center justify-between gap-4 border-b pb-4">
+        <div className="flex items-center gap-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo.png"
+            alt="MSA DataX"
+            className="h-9 w-auto rounded-md shadow-sm"
+          />
+          <div className="hidden items-baseline gap-2 sm:flex">
+            <span className="text-base font-semibold tracking-tight">MSA DataX</span>
+            <span className="rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              {t("app.miniBadge")}
+            </span>
           </div>
+        </div>
+        <div className="flex items-center gap-2">
           <LanguageSwitcher />
           <UserMenu />
         </div>
       </header>
 
-      <Card className="mb-6">
-        <CardContent className="pt-6">
+      <Hero />
+
+      {/* Premium-Card für die Form: rounded-2xl + softer Schatten + p-8. */}
+      <Card className="mb-6 mt-6 rounded-2xl shadow-sm">
+        <CardContent className="p-6 sm:p-8">
           <ScanForm onSubmit={onScan} loading={loading} />
         </CardContent>
       </Card>
@@ -167,7 +178,7 @@ function Results({ result }: { result: ScanResponse }) {
           <div className="lg:col-span-2">
             <RiskScoreCard risk={result.risk} target={result.target} />
           </div>
-          <SubScoresCard subScores={result.risk.sub_scores} />
+          <SubScoresCard subScores={result.risk.sub_scores} caps={result.risk.applied_caps} />
         </div>
 
         <HardCapsList caps={result.risk.applied_caps} />
@@ -213,6 +224,11 @@ function Results({ result }: { result: ScanResponse }) {
       )}
 
       <FirstPartyScriptsSection network={result.network} />
+
+      {/* Phase 11 — Performance suite. Rendered after the GDPR + security
+          chapters because it's a separate, opt-in concern (not part of
+          the compliance audit narrative). */}
+      {result.performance && <PerformanceCard report={result.performance} />}
     </div>
   );
 }

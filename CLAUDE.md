@@ -57,7 +57,8 @@ Currently a single-node dev tool, not yet a multi-tenant SaaS. See the
 │   │       ├── consent_clicker.py      19 CMP selectors + multilingual text fallback
 │   │       ├── consent_diff.py         Pre vs post-consent diff engine
 │   │       ├── form_analyzer.py        Deterministic; owns PII_CATEGORIES (exported)
-│   │       └── scoring.py              5 sub-scores → hard caps → recommendations
+│   │       ├── scoring.py              5 sub-scores → hard caps → recommendations
+│   │       └── performance/            Phase 11 — opt-in performance suite (Web Vitals + network + assets, linear no-cap score)
 │   ├── alembic/                Migration scripts (env.py reads DATABASE_URL)
 │   ├── alembic.ini
 │   ├── Dockerfile              Production image — mcr.microsoft.com/playwright/python base
@@ -657,6 +658,84 @@ else → `backend/.env`.
   to an unrelated premium tier (not a tracking opt-out) will false-
   positive. The recommendation says so. False-positive cost is
   acceptable for a deterministic, no-AI signal.
+
+**32. Google Fonts (LG München I 2022) detection is structured, not boolean.**
+- `app/modules/google_fonts_detector.py` is a pure function over a
+  `NetworkResult`: returns a `GoogleFontsCheck` with `detected` plus
+  *which families*, *how many binary downloads*, *which initiator
+  pages*, and up to three *css_url_samples*. The pre-Phase-10 version
+  was a one-line bool helper inside `scoring.py` — gone now. Anything
+  that needs the signal reads `network.google_fonts.detected`.
+- Two hostnames in scope: `fonts.googleapis.com` (CSS) and
+  `fonts.gstatic.com` (binaries). Adobe Fonts (`use.typekit.net`) and
+  Bunny Fonts (`fonts.bunny.net`) deliberately do NOT trigger — Bunny
+  is the EU-hosted mirror German DPAs explicitly bless as remediation,
+  and Adobe is a separate compliance question.
+- Family parsing handles all four URL shapes seen in the wild:
+  `?family=Roboto`, `?family=Roboto:300,400` (weight stripped),
+  `?family=Roboto|Open+Sans` (legacy pipe + `+`-encoded space),
+  `/css2?family=Roboto:wght@400;700` (v2 axis syntax). Stable
+  insertion order (first-seen) so the dashboard renders deterministic.
+- Cap `google_fonts_external` is 55 (Phase-10 tightening from the
+  earlier 65), aligned with `policy_missing_user_rights` /
+  `no_legal_basis_stated` — same Art. 13 / Art. 44 ff. tier of
+  routine DPA finding. The recommendation cites LG München I 3 O
+  17493/20 (20.01.2022) + the €100 damages award and stitches the
+  detected family list into the prose so the auditor sees concrete
+  remediation targets without opening the raw network panel.
+- Detector runs on the **pre-consent** network capture in
+  `scanner.py` (after security audit, before vuln-libs scan). Loading
+  Google Fonts *post*-consent is a separate question this module does
+  not address.
+- `network.google_fonts` is a Pydantic field with a default-empty
+  `GoogleFontsCheck()` so callers / fixtures that don't run the
+  detector still produce valid responses. Test fixtures that want
+  the cap to fire MUST call `detect_google_fonts(net)` and assign
+  the result — the scoring layer no longer re-walks `network.requests`.
+
+**33. Performance suite is opt-in and KEPT SEPARATE from the GDPR risk score.**
+- `app/modules/performance/` is a subpackage with four files:
+  `web_vitals.py` (PerformanceObserver injection + harvest),
+  `network_metrics.py` (pure: total bytes / type breakdown / render-
+  blocking detection), `asset_audit.py` (pure: oversized images +
+  scripts + uncompressed text responses), `scoring.py` (linear,
+  weighted, capped-at-80-deductions). Orchestrator `audit.py` wraps
+  them and never raises into the scanner.
+- Gating: `ScanRequest.performance_audit: bool = False`. When false,
+  `ScanResponse.performance` is None — zero overhead on the GDPR
+  path. When true, the scanner installs the Web Vitals observer on
+  the pre-context BEFORE any page is opened (`add_init_script`
+  on the BrowserContext, so all subsequent pages auto-arm), then
+  AFTER the crawl opens a dedicated harvest page on the homepage,
+  waits ~3s, and reads `window.__msaWebVitals`.
+- The score is **linear 0-100, no hard caps**, deliberately. Every
+  point is traceable via `score_breakdown: dict[str, int]` (e.g.
+  `{"lcp": -8, "render_blocking": -4, "uncompressed_responses": -3}`).
+  Max deductions sum to 80, so a worst-case site shows 20/100 — never
+  zero. Cross-contamination with the GDPR score would dilute both
+  reports' meaning; performance never affects `risk.score`.
+- Render-blocking detection uses a heuristic on the request side
+  (resource_type ∈ {"script","stylesheet"} + status 200/304 +
+  not in `_ASYNC_BY_DEFAULT_HOSTS`). Browser's authoritative
+  `renderBlockingStatus` would need a per-page evaluate — too much
+  for v1. Documented false-positive ~10-15% (e.g. `media="print"`
+  stylesheets get flagged); the dashboard renders the URL list so
+  the auditor can spot-check.
+- `NetworkRequest` carries two Phase-11 fields populated by the
+  network_analyzer's response listener: `response_size` (from
+  Content-Length header — None when missing, e.g. chunked transfer)
+  and `content_encoding` (verbatim header). Asset audit treats
+  `response_size=None` as "skip the asset rather than guess".
+- INP is approximated via the Long-Tasks API ("longest single
+  main-thread block in the wait window") because real INP requires
+  user interaction that doesn't happen in headless crawl. The
+  WebVitals model documents this; the recommendation prose does
+  not call it INP directly to avoid misleading customers.
+- The web_vitals collector is NOT covered by unit tests — it
+  needs a real Playwright page or a heavy mock. Pure functions
+  (network_metrics, asset_audit, scoring, audit orchestrator) ARE
+  fully covered (31 tests in `test_performance.py`). Document this
+  gap rather than hide it.
 
 ## Known quirks / gotchas
 

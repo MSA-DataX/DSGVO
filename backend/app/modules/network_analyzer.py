@@ -85,6 +85,14 @@ _KNOWN_TRACKERS: dict[str, tuple[Region, tuple[str, ...]]] = {
     "etracker.de":             ("EU",  ("analytics",)),
     "usercentrics.eu":         ("EU",  ("consent",)),
     "cookiebot.com":           ("EU",  ("consent",)),
+    # EU appointment / scheduling SaaS — used by medical practices,
+    # consultants, salons. zeeg (Berlin) is the EU-hosted alternative
+    # to Calendly. Without this entry the scanner classifies it as
+    # Unknown / medium-risk, which under-states EU compliance and
+    # over-states transfer concern.
+    "zeeg.me":                 ("EU",  ("scheduling",)),
+    "zeeg.com":                ("EU",  ("scheduling",)),
+    "calenso.com":             ("EU",  ("scheduling",)),  # Swiss equivalent (CH = adequacy)
 }
 
 # ccTLDs that map to EU member states + EEA + UK (UK has adequacy decision).
@@ -236,8 +244,32 @@ class NetworkAnalyzer:
 
     def _on_response(self, response: Response) -> None:
         rec = self._records.get(id(response.request))
-        if rec is not None:
-            rec.status = response.status
+        if rec is None:
+            return
+        rec.status = response.status
+        # Phase 11 — capture transferred bytes + compression header for the
+        # performance audit. Both fields are optional on the model, so a
+        # failure here (e.g. response was cancelled mid-stream) just
+        # leaves them None — degrades the asset-audit precision but does
+        # NOT break GDPR scoring.
+        try:
+            headers = response.headers  # type: ignore[attr-defined]
+        except Exception:
+            headers = {}
+        # Header keys come through lowercased from Playwright.
+        ce = headers.get("content-encoding")
+        rec.content_encoding = ce.strip() if ce else None
+        cl = headers.get("content-length")
+        if cl:
+            try:
+                rec.response_size = int(cl)
+            except (TypeError, ValueError):
+                rec.response_size = None
+        # Don't fall back to `await response.body()` here — would block the
+        # event listener and serialise the whole crawl. Missing
+        # Content-Length leaves response_size=None; the asset audit
+        # treats None as "unknown" and skips the asset rather than
+        # double-counting it.
 
     def _on_requestfailed(self, request: Request) -> None:
         rec = self._records.get(id(request))

@@ -28,7 +28,52 @@ const COLORS = {
   muted:    "#6b7280",
   border:   "#e5e7eb",
   ink:      "#0f172a",
+  // Phase-PDF-Big4: classification stripe + brand teal carry-over from
+  // dashboard. Stripe uses the same teal as the dashboard so the
+  // printed report visually matches the on-screen artefact.
+  classification: "#0e7490",
+  brand:          "#0891b2",
+  panel:          "#f8fafc",
 };
+
+// ---------------------------------------------------------------------------
+// Report metadata helpers (Phase-PDF-Big4)
+// ---------------------------------------------------------------------------
+//
+// Big4-style audits identify every finding by a stable ID so that
+// remediation tickets, follow-up reports, and supporting evidence can
+// reference each issue across documents. We derive both the per-report
+// ID and the per-finding IDs deterministically from the scan payload —
+// re-rendering the same scan produces the same IDs, even from a
+// re-imported JSON. No DB column needed.
+
+/** Short, lowercase, alnum hash of any string. ~6 chars, collision-safe
+ *  enough for "tells two scans of the same target apart". */
+function shortHash(input: string): string {
+  let h = 0;
+  for (let i = 0; i < input.length; i++) h = ((h << 5) - h + input.charCodeAt(i)) | 0;
+  // Force unsigned, base-36, pad to fixed width for uniform IDs.
+  return (h >>> 0).toString(36).padStart(7, "0").slice(0, 7).toUpperCase();
+}
+
+/** Stable report ID like ``MSA-2026-04-25-A1B2C3D``. Date is the scan
+ *  creation date (UTC, YYYY-MM-DD) so a re-run on the same day produces
+ *  a different ID via the hash component. */
+function reportId(result: ScanResponse): string {
+  const dt = result.created_at ? new Date(result.created_at) : new Date();
+  const yyyy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  const h = shortHash((result.id ?? "") + result.target + (result.created_at ?? ""));
+  return `MSA-${yyyy}-${mm}-${dd}-${h}`;
+}
+
+/** Per-finding ID. ``prefix`` is a domain marker (DSGVO / SEC / PERF).
+ *  Index is 1-based for human reading. Width-3 zero-padded so IDs sort
+ *  lexicographically the same as numerically. */
+function findingId(prefix: "DSGVO" | "SEC" | "PERF", index: number): string {
+  return `F-${prefix}-${String(index).padStart(3, "0")}`;
+}
 
 const styles = StyleSheet.create({
   page: {
@@ -158,11 +203,81 @@ const styles = StyleSheet.create({
     bottom: 20,
     left: 40,
     right: 40,
+    flexDirection: "row",
+    justifyContent: "space-between",
     fontSize: 7,
     color: COLORS.muted,
-    textAlign: "center",
     borderTop: `0.5pt solid ${COLORS.border}`,
     paddingTop: 6,
+  },
+  // Big4 reports stripe a classification on every page. We render it as
+  // a tiny ribbon at the top of each non-cover page.
+  classificationRibbon: {
+    position: "absolute",
+    top: 0, left: 0, right: 0,
+    backgroundColor: COLORS.classification,
+    paddingVertical: 3,
+    paddingHorizontal: 40,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    fontSize: 7,
+    color: "#fff",
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
+    fontWeight: 700,
+  },
+  // Per-finding card for the Big4-style enumeration: ID + severity +
+  // title up top, body in the middle, owner/due/status row at the
+  // bottom for the customer's PM to fill in.
+  findingCard: {
+    border: `0.5pt solid ${COLORS.border}`,
+    backgroundColor: "#fff",
+    padding: 10,
+    marginBottom: 8,
+  },
+  findingHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  findingId: {
+    fontSize: 8,
+    fontFamily: "Courier",
+    color: COLORS.muted,
+    marginRight: 8,
+    letterSpacing: 0.5,
+  },
+  trackerRow: {
+    flexDirection: "row",
+    marginTop: 8,
+    paddingTop: 6,
+    borderTop: `0.5pt dashed ${COLORS.border}`,
+    fontSize: 8,
+    color: COLORS.muted,
+  },
+  trackerCell: {
+    flexDirection: "row",
+    marginRight: 18,
+  },
+  trackerLabel: {
+    fontWeight: 700,
+    marginRight: 4,
+    color: COLORS.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  trackerField: {
+    minWidth: 60,
+    borderBottom: `0.5pt solid ${COLORS.border}`,
+    paddingBottom: 1,
+  },
+  // Methodology + References pages share a panel look — light bg,
+  // bordered, two-column-friendly when needed.
+  panel: {
+    backgroundColor: COLORS.panel,
+    border: `0.5pt solid ${COLORS.border}`,
+    padding: 12,
+    marginBottom: 10,
   },
 });
 
@@ -186,15 +301,94 @@ function Badge({ children, color }: { children: React.ReactNode; color: string }
   );
 }
 
-function PageFooter({ lang }: { lang: Lang }) {
+// Severity ordering — high → medium → low. Used to sort findings so
+// the auditor reads worst first in the per-finding enumerations.
+function severityRank(s: string): number {
+  return s === "high" ? 0 : s === "medium" ? 1 : 2;
+}
+
+// Big4-style finding card: stable ID + severity badge + title up top,
+// description + optional verbatim excerpt in the middle, blank
+// Owner / Due / Status fields at the bottom for the customer's PM
+// to fill in. ``wrap={false}`` keeps a card on one page rather than
+// splitting mid-finding which destroys readability.
+function FindingCard({
+  fid, severity, title, description, excerpt, lang, t,
+}: {
+  fid: string;
+  severity: string;
+  title: string;
+  description: string;
+  excerpt?: string | null;
+  lang: Lang;
+  t: (k: string, v?: Record<string, string | number>) => string;
+}) {
   return (
-    <Text
-      style={styles.footer}
-      fixed
-      render={({ pageNumber, totalPages }) =>
-        `MSA DataX · ${translate(lang, "app.title")} · ${pageNumber}/${totalPages}`
-      }
-    />
+    <View style={styles.findingCard} wrap={false}>
+      <View style={styles.findingHeaderRow}>
+        <Text style={styles.findingId}>{fid}</Text>
+        <Badge color={severityColor(severity)}>{t(`severity.${severity}`)}</Badge>
+        <Text style={{ fontSize: 10, fontWeight: 700, marginLeft: 8, flex: 1 }}>
+          {title}
+        </Text>
+      </View>
+      <Text style={{ fontSize: 9, color: "#374151", marginTop: 2 }}>
+        {description}
+      </Text>
+      {excerpt && (
+        <Text style={{ fontSize: 8, fontStyle: "italic", color: COLORS.muted, marginTop: 4, paddingLeft: 8, borderLeft: `2pt solid ${COLORS.border}` }}>
+          {`"${excerpt}"`}
+        </Text>
+      )}
+      <View style={styles.trackerRow}>
+        <View style={styles.trackerCell}>
+          <Text style={styles.trackerLabel}>{t("pdf.finding.owner")}:</Text>
+          <Text style={styles.trackerField}> </Text>
+        </View>
+        <View style={styles.trackerCell}>
+          <Text style={styles.trackerLabel}>{t("pdf.finding.due")}:</Text>
+          <Text style={styles.trackerField}> </Text>
+        </View>
+        <View style={styles.trackerCell}>
+          <Text style={styles.trackerLabel}>{t("pdf.finding.status")}:</Text>
+          <Text style={styles.trackerField}>{t("pdf.finding.statusOpen")}</Text>
+        </View>
+      </View>
+      <Text style={{ fontSize: 7, color: COLORS.muted, marginTop: 6, fontFamily: "Courier" }}>
+        {lang === "de" ? "Empfohlene Maßnahme:" : "Recommended action:"} {t("pdf.finding.refReco")}
+      </Text>
+    </View>
+  );
+}
+
+function PageFooter({ lang, reportId: rid }: { lang: Lang; reportId: string }) {
+  // Footer is split into three columns so a Big4-style page bears its
+  // own provenance: brand on the left, report ID center, page count
+  // right. ``fixed`` makes react-pdf stamp it on every page of the
+  // hosting <Page>.
+  return (
+    <View style={styles.footer} fixed>
+      <Text>MSA DataX · {translate(lang, "app.title")}</Text>
+      <Text style={{ fontFamily: "Courier" }}>{rid}</Text>
+      <Text
+        render={({ pageNumber, totalPages }) =>
+          translate(lang, "pdf.footer.page", { current: pageNumber, total: totalPages })
+        }
+      />
+    </View>
+  );
+}
+
+// Top-of-page classification ribbon — Big4 reports flag every page with
+// the document's confidentiality level so a stray printout can't be
+// mistaken for a public artefact. We keep it lightweight (one row,
+// 3pt vertical) so it doesn't compete with content.
+function ClassificationRibbon({ lang, reportId: rid }: { lang: Lang; reportId: string }) {
+  return (
+    <View style={styles.classificationRibbon} fixed>
+      <Text>{translate(lang, "pdf.classification")}</Text>
+      <Text style={{ fontFamily: "Courier" }}>{rid}</Text>
+    </View>
   );
 }
 
@@ -228,8 +422,29 @@ function ChapterDivider({
 // ---------------------------------------------------------------------------
 
 function CoverPage({ result, lang, t }: { result: ScanResponse; lang: Lang; t: (k: string, v?: Record<string, string | number>) => string }) {
+  const rid = reportId(result);
+  const issuedAt = result.created_at ? new Date(result.created_at) : new Date();
+  // Engagement-block fields are deliberately concrete (not "auto-generated")
+  // so the PDF reads as an audit deliverable, not a tool dump. Methodology
+  // pointer is the page reference into the report so a reader who lands on
+  // the cover knows where to read the limits of the scan.
   return (
     <Page size="A4" style={styles.page}>
+      {/* Solid classification stripe — wider on the cover than on body
+          pages because the cover is the first thing a reader sees. */}
+      <View
+        style={{
+          backgroundColor: COLORS.classification,
+          paddingVertical: 6, paddingHorizontal: 40,
+          flexDirection: "row", justifyContent: "space-between",
+          fontSize: 8, color: "#fff",
+          letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 700,
+        }}
+      >
+        <Text>{t("pdf.classification")}</Text>
+        <Text>{t("pdf.cover.draft")}</Text>
+      </View>
+
       <View style={styles.cover}>
         {/* Brand + product name. Each Text is its own block with explicit
             margin, which is what react-pdf wants for reliable vertical
@@ -243,33 +458,67 @@ function CoverPage({ result, lang, t }: { result: ScanResponse; lang: Lang; t: (
           {result.risk.score}
         </Text>
         <Text style={styles.coverOf}>{t("risk.of100")}</Text>
-        <View style={{ marginBottom: 40 }}>
+        <View style={{ marginBottom: 28 }}>
           <Badge color={ratingColor(result.risk.rating)}>
             {t(`risk.rating.${result.risk.rating}`)}
           </Badge>
         </View>
 
-        {/* Meta — date + scan id */}
-        <Text style={[styles.muted, { textAlign: "center" }]}>
-          {result.created_at
-            ? new Date(result.created_at).toLocaleString(lang)
-            : new Date().toLocaleString(lang)}
-        </Text>
-        {result.id && (
-          <Text style={[styles.small, { marginTop: 2, textAlign: "center" }]}>
-            {t("common.scanId")} {result.id}
-          </Text>
-        )}
+        {/* Engagement-summary panel: report ID, issue date, version,
+            engagement scope, methodology pointer. Fixed-width left
+            column for labels so the values line up consistently. */}
+        <View
+          style={{
+            width: "85%",
+            border: `0.5pt solid ${COLORS.border}`,
+            backgroundColor: COLORS.panel,
+            padding: 14,
+          }}
+        >
+          <CoverMetaRow label={t("pdf.cover.reportId")} value={rid} mono />
+          <CoverMetaRow label={t("pdf.cover.issued")} value={issuedAt.toLocaleString(lang)} />
+          <CoverMetaRow label={t("pdf.cover.version")} value="v1.0" />
+          <CoverMetaRow label={t("pdf.cover.scope")} value={t("pdf.cover.scopeValue")} />
+          <CoverMetaRow label={t("pdf.cover.methodology")} value={t("pdf.cover.methodologyValue")} />
+          <CoverMetaRow label={t("pdf.cover.preparedBy")} value="MSA DataX GDPR Scanner" />
+        </View>
       </View>
-      <PageFooter lang={lang} />
+      {/* No PageFooter on the cover — Big4 cover pages are deliberately
+          chrome-free. The report ID is already in the engagement panel. */}
     </Page>
+  );
+}
+
+function CoverMetaRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <View style={{ flexDirection: "row", marginBottom: 4 }}>
+      <Text
+        style={{
+          width: 110, fontSize: 8, fontWeight: 700,
+          textTransform: "uppercase", letterSpacing: 0.8,
+          color: COLORS.muted, paddingTop: 1,
+        }}
+      >
+        {label}
+      </Text>
+      <Text
+        style={{
+          flex: 1, fontSize: 9,
+          fontFamily: mono ? "Courier" : "Helvetica",
+        }}
+      >
+        {value}
+      </Text>
+    </View>
   );
 }
 
 function SummaryPage({ result, lang, t }: { result: ScanResponse; lang: Lang; t: (k: string, v?: Record<string, string | number>) => string }) {
   const risk = result.risk;
+  const rid = reportId(result);
   return (
-    <Page size="A4" style={styles.page}>
+    <Page size="A4" style={[styles.page, { paddingTop: 50 }]}>
+      <ClassificationRibbon lang={lang} reportId={rid} />
       {/* Sub-scores table */}
       <Text style={styles.h2}>{t("sub.title")}</Text>
       <View style={styles.tableHeader}>
@@ -306,7 +555,7 @@ function SummaryPage({ result, lang, t }: { result: ScanResponse; lang: Lang; t:
           ))}
         </>
       )}
-      <PageFooter lang={lang} />
+      <PageFooter lang={lang} reportId={rid} />
     </Page>
   );
 }
@@ -314,8 +563,10 @@ function SummaryPage({ result, lang, t }: { result: ScanResponse; lang: Lang; t:
 function RecommendationsPage({ result, lang, t }: { result: ScanResponse; lang: Lang; t: (k: string, v?: Record<string, string | number>) => string }) {
   const recs = result.risk.recommendations;
   if (recs.length === 0) return null;
+  const rid = reportId(result);
   return (
-    <Page size="A4" style={styles.page}>
+    <Page size="A4" style={[styles.page, { paddingTop: 50 }]}>
+      <ClassificationRibbon lang={lang} reportId={rid} />
       <Text style={styles.h2}>{t("recs.title")}</Text>
       {recs.map((r, i) => (
         <View key={i} style={styles.recBox} wrap={false}>
@@ -338,7 +589,7 @@ function RecommendationsPage({ result, lang, t }: { result: ScanResponse; lang: 
           )}
         </View>
       ))}
-      <PageFooter lang={lang} />
+      <PageFooter lang={lang} reportId={rid} />
     </Page>
   );
 }
@@ -357,9 +608,11 @@ function PrivacyChapterPage({
   const consent = result.consent;
   const channels = result.contact_channels;
   const widgets = result.widgets;
+  const rid = reportId(result);
 
   return (
-    <Page size="A4" style={styles.page}>
+    <Page size="A4" style={[styles.page, { paddingTop: 50 }]}>
+      <ClassificationRibbon lang={lang} reportId={rid} />
       <ChapterDivider
         lang={lang} number={1}
         titleKey="chapter.privacy.title"
@@ -378,19 +631,27 @@ function PrivacyChapterPage({
         AI: {policy.provider}{policy.model ? ` · ${policy.model}` : ""} · Score: {policy.compliance_score}/100
       </Text>
       {policy.issues.length > 0 && (
-        <View style={{ marginTop: 6 }}>
+        <View style={{ marginTop: 8 }}>
           <Text style={styles.h3}>{t("privacy.issues", { count: policy.issues.length })}</Text>
-          {policy.issues.slice(0, 6).map((iss, i) => (
-            <View key={i} style={{ marginBottom: 4 }}>
-              <View style={styles.row}>
-                <Badge color={severityColor(iss.severity)}>{iss.severity}</Badge>
-                <Text style={{ fontSize: 9, fontWeight: 700, marginLeft: 6 }}>
-                  {iss.category.replace(/_/g, " ")}
-                </Text>
-              </View>
-              <Text style={{ fontSize: 9, marginTop: 2 }}>{iss.description}</Text>
-            </View>
-          ))}
+          {/* Per-finding cards. Sorted high → medium → low so the
+              auditor reads worst first. Each card carries a stable ID
+              + Owner / Due / Status row to make the PDF actionable
+              as a tracking document, not just a snapshot. */}
+          {[...policy.issues]
+            .sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
+            .slice(0, 8)
+            .map((iss, i) => (
+              <FindingCard
+                key={i}
+                fid={findingId("DSGVO", i + 1)}
+                severity={iss.severity}
+                title={iss.category.replace(/_/g, " ")}
+                description={iss.description}
+                excerpt={iss.excerpt}
+                lang={lang}
+                t={t}
+              />
+            ))}
         </View>
       )}
 
@@ -532,7 +793,7 @@ function PrivacyChapterPage({
         })}
       </Text>
 
-      <PageFooter lang={lang} />
+      <PageFooter lang={lang} reportId={rid} />
     </Page>
   );
 }
@@ -546,6 +807,7 @@ function SecurityAuditPage({
 }) {
   const sec = result.security;
   if (!sec || sec.error) return null;
+  const rid = reportId(result);
 
   const tls = sec.tls;
   const certDaysLabel = (() => {
@@ -561,7 +823,8 @@ function SecurityAuditPage({
   const libs = result.vulnerable_libraries;
 
   return (
-    <Page size="A4" style={styles.page}>
+    <Page size="A4" style={[styles.page, { paddingTop: 50 }]}>
+      <ClassificationRibbon lang={lang} reportId={rid} />
       {/* Kapitel 2 divider — mirrors dashboard ChapterHeader */}
       <ChapterDivider
         lang={lang} number={2}
@@ -733,7 +996,7 @@ function SecurityAuditPage({
         {t("security.footer")}
       </Text>
 
-      <PageFooter lang={lang} />
+      <PageFooter lang={lang} reportId={rid} />
     </Page>
   );
 }
@@ -797,15 +1060,143 @@ function TlsPdfStat({
   );
 }
 
-function DisclaimerPage({ lang, t }: { lang: Lang; t: (k: string, v?: Record<string, string | number>) => string }) {
+// Methodology page — every Big4 audit deliverable opens with one. Tells
+// the reader what was inspected, which methods, and where the audit
+// stops on purpose. We render it as the second page so the rest of the
+// findings have implicit context. Source of truth: this page must list
+// what the scanner ACTUALLY does — when a new module is added, mirror
+// it here so the report stays honest about its own capabilities.
+function MethodologyPage({
+  lang, t, rid,
+}: {
+  lang: Lang;
+  t: (k: string, v?: Record<string, string | number>) => string;
+  rid: string;
+}) {
+  return (
+    <Page size="A4" style={[styles.page, { paddingTop: 50 }]}>
+      <ClassificationRibbon lang={lang} reportId={rid} />
+      <Text style={styles.h1}>{t("pdf.methodology.title")}</Text>
+      <Text style={[styles.muted, { marginBottom: 12 }]}>
+        {t("pdf.methodology.intro")}
+      </Text>
+
+      <View style={styles.panel}>
+        <Text style={styles.h3}>{t("pdf.methodology.scopeTitle")}</Text>
+        {[
+          "pdf.methodology.scope.crawl",
+          "pdf.methodology.scope.network",
+          "pdf.methodology.scope.cookies",
+          "pdf.methodology.scope.policy",
+          "pdf.methodology.scope.forms",
+          "pdf.methodology.scope.consent",
+          "pdf.methodology.scope.security",
+          "pdf.methodology.scope.dns",
+          "pdf.methodology.scope.libs",
+        ].map((k) => (
+          <Text key={k} style={{ fontSize: 9, marginBottom: 3 }}>
+            • {t(k)}
+          </Text>
+        ))}
+      </View>
+
+      <View style={styles.panel}>
+        <Text style={styles.h3}>{t("pdf.methodology.outOfScopeTitle")}</Text>
+        {[
+          "pdf.methodology.outOfScope.activeProbing",
+          "pdf.methodology.outOfScope.dnsRebinding",
+          "pdf.methodology.outOfScope.geoIp",
+          "pdf.methodology.outOfScope.authedCrawl",
+          "pdf.methodology.outOfScope.legalAdvice",
+        ].map((k) => (
+          <Text key={k} style={{ fontSize: 9, marginBottom: 3 }}>
+            • {t(k)}
+          </Text>
+        ))}
+      </View>
+
+      <View style={styles.panel}>
+        <Text style={styles.h3}>{t("pdf.methodology.limitationsTitle")}</Text>
+        {[
+          "pdf.methodology.limitations.snapshot",
+          "pdf.methodology.limitations.languages",
+          "pdf.methodology.limitations.aiProvider",
+          "pdf.methodology.limitations.headlessRendering",
+        ].map((k) => (
+          <Text key={k} style={{ fontSize: 9, marginBottom: 3 }}>
+            • {t(k)}
+          </Text>
+        ))}
+      </View>
+
+      <PageFooter lang={lang} reportId={rid} />
+    </Page>
+  );
+}
+
+// References / glossary appendix — cited rulings + articles all in one
+// place so the reader doesn't have to chase individual finding cards
+// for the legal anchor. Stable list (per CLAUDE.md conventions); when a
+// new ruling is cited in scoring.py, add it here too.
+function ReferencesPage({
+  lang, t, rid,
+}: {
+  lang: Lang;
+  t: (k: string, v?: Record<string, string | number>) => string;
+  rid: string;
+}) {
+  // Each entry: short identifier (left col) + plain-language summary
+  // (right col). Identifiers are PDF-friendly (no italics, no markdown).
+  const refs: { id: string; bodyKey: string }[] = [
+    { id: "Art. 6 DSGVO",                 bodyKey: "pdf.references.art6" },
+    { id: "Art. 7(2) DSGVO",              bodyKey: "pdf.references.art7" },
+    { id: "Art. 13 DSGVO",                bodyKey: "pdf.references.art13" },
+    { id: "Art. 32 DSGVO",                bodyKey: "pdf.references.art32" },
+    { id: "Art. 44 ff. DSGVO",            bodyKey: "pdf.references.art44" },
+    { id: "§ 25 TDDDG",                   bodyKey: "pdf.references.tdddg" },
+    { id: "§ 5 TMG",                      bodyKey: "pdf.references.tmg" },
+    { id: "EuGH Planet49 (C-673/17)",     bodyKey: "pdf.references.planet49" },
+    { id: "EuGH Schrems II (C-311/18)",   bodyKey: "pdf.references.schremsII" },
+    { id: "LG München I (3 O 17493/20)",  bodyKey: "pdf.references.lgMuenchen" },
+    { id: "EDPB Guidelines 03/2022",      bodyKey: "pdf.references.edpb032022" },
+    { id: "EDPB Opinion 8/2024",          bodyKey: "pdf.references.edpb082024" },
+  ];
+  return (
+    <Page size="A4" style={[styles.page, { paddingTop: 50 }]}>
+      <ClassificationRibbon lang={lang} reportId={rid} />
+      <Text style={styles.h1}>{t("pdf.references.title")}</Text>
+      <Text style={[styles.muted, { marginBottom: 12 }]}>
+        {t("pdf.references.intro")}
+      </Text>
+      <View style={styles.tableHeader}>
+        <Text style={[styles.cell, { flex: 3 }]}>{t("pdf.references.col.ref")}</Text>
+        <Text style={[styles.cell, { flex: 7 }]}>{t("pdf.references.col.body")}</Text>
+      </View>
+      {refs.map((r) => (
+        <View key={r.id} style={styles.tableRow} wrap={false}>
+          <Text style={[styles.cell, { flex: 3, fontSize: 9, fontWeight: 700 }]}>
+            {r.id}
+          </Text>
+          <Text style={[styles.cell, { flex: 7, fontSize: 9 }]}>
+            {t(r.bodyKey)}
+          </Text>
+        </View>
+      ))}
+      <PageFooter lang={lang} reportId={rid} />
+    </Page>
+  );
+}
+
+function DisclaimerPage({ lang, t, rid }: { lang: Lang; t: (k: string, v?: Record<string, string | number>) => string; rid: string }) {
   const disclaimer = lang === "de"
     ? "Dieser Bericht wurde automatisch aus passiven Beobachtungen der öffentlich zugänglichen Webseite generiert (HTTP-Responses, TLS-Handshake, clientseitiges DOM-Rendering). Es wurden keine aktiven Sicherheitstests (Payload-Fuzzing, Directory-Bruteforce, Exploit-Versuche) durchgeführt — § 202c StGB wird gewahrt. KI-generierte Textbausteine und Zusammenfassungen sind Entwürfe und stellen keine Rechtsberatung dar; sie müssen vor Verwendung durch qualifizierte Rechtsberater geprüft und angepasst werden. MSA DataX übernimmt keine Haftung für die rechtliche Eignung der hier enthaltenen Inhalte."
     : "This report was generated automatically from passive observations of the publicly accessible website (HTTP responses, TLS handshake, client-side DOM rendering). No active security testing (payload fuzzing, directory bruteforce, exploit attempts) was performed — § 202c StGB compliance maintained. AI-generated text drafts and summaries are drafts, not legal advice; they must be reviewed and adapted by qualified legal counsel before use. MSA DataX assumes no liability for the legal sufficiency of the content in this report.";
   return (
-    <Page size="A4" style={styles.page}>
+    <Page size="A4" style={[styles.page, { paddingTop: 50 }]}>
+      <ClassificationRibbon lang={lang} reportId={rid} />
       <Text style={styles.h2}>{lang === "de" ? "Rechtlicher Hinweis" : "Legal notice"}</Text>
       <Text style={{ fontSize: 9, lineHeight: 1.6 }}>{disclaimer}</Text>
-      <PageFooter lang={lang} />
+      <PageFooter lang={lang} reportId={rid} />
     </Page>
   );
 }
@@ -816,6 +1207,7 @@ function DisclaimerPage({ lang, t }: { lang: Lang; t: (k: string, v?: Record<str
 
 export async function generateAndDownloadPdf(result: ScanResponse, lang: Lang): Promise<void> {
   const t = (k: string, v?: Record<string, string | number>) => translate(lang, k, v);
+  const rid = reportId(result);
 
   const doc = (
     <Document
@@ -824,6 +1216,9 @@ export async function generateAndDownloadPdf(result: ScanResponse, lang: Lang): 
       subject={`GDPR Compliance Scan for ${result.target}`}
     >
       <CoverPage result={result} lang={lang} t={t} />
+      {/* Methodology comes second — Big4-deliverable convention. The
+          reader knows what was inspected before reading findings. */}
+      <MethodologyPage lang={lang} t={t} rid={rid} />
       <SummaryPage result={result} lang={lang} t={t} />
       {result.risk.recommendations.length > 0 && (
         <RecommendationsPage result={result} lang={lang} t={t} />
@@ -834,7 +1229,10 @@ export async function generateAndDownloadPdf(result: ScanResponse, lang: Lang): 
       {result.security && !result.security.error && (
         <SecurityAuditPage result={result} lang={lang} t={t} />
       )}
-      <DisclaimerPage lang={lang} t={t} />
+      {/* Cited articles + rulings appendix — last content page before
+          the legal disclaimer. */}
+      <ReferencesPage lang={lang} t={t} rid={rid} />
+      <DisclaimerPage lang={lang} t={t} rid={rid} />
     </Document>
   );
 

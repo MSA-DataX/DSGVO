@@ -2,6 +2,7 @@
 
 import { AlertTriangle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLang } from "@/lib/LanguageContext";
 import type { HardCap } from "@/lib/types";
@@ -23,7 +24,28 @@ export function HardCapsList({ caps }: { caps: HardCap[] }) {
             <AlertTitle className="font-mono text-xs uppercase tracking-wide">
               {c.code} · {t("caps.maxScore", { value: c.cap_value })}
             </AlertTitle>
-            <AlertDescription>{c.description}</AlertDescription>
+            <AlertDescription>
+              {c.description}
+              {/* Affected sub-scores — small badge row showing which
+                  sub-scores this cap is rooted in. Empty for cross-
+                  cutting caps (typically security caps like
+                  no_https_enforcement). */}
+              {c.affected_subscores && c.affected_subscores.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {t("caps.affects")}:
+                  </span>
+                  {c.affected_subscores.map((sub) => (
+                    <Badge
+                      key={sub}
+                      className="bg-risk-high/15 text-risk-high text-[10px] font-mono"
+                    >
+                      {t(`sub.name.${sub}`)}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </AlertDescription>
           </Alert>
         ))}
       </CardContent>

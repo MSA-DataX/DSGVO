@@ -1,6 +1,6 @@
 "use client";
 
-import { Radar } from "lucide-react";
+import { Radar, Type } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -21,6 +21,7 @@ export function DataFlowTable({ network }: { network: NetworkResult }) {
   const pixelDomains = Array.from(
     new Set(pixelRequests.map((r) => r.registered_domain || r.domain))
   );
+  const gfonts = network.google_fonts;
   return (
     <Card>
       <CardHeader>
@@ -42,6 +43,25 @@ export function DataFlowTable({ network }: { network: NetworkResult }) {
             </AlertDescription>
           </Alert>
         )}
+        {gfonts?.detected && (
+          <Alert className="border-risk-high/40 bg-risk-high/5">
+            <Type className="h-4 w-4 text-risk-high" />
+            <AlertTitle className="text-sm">
+              {t("flow.gfonts.title", {
+                families: gfonts.families.length,
+                binaries: gfonts.binary_count,
+              })}
+            </AlertTitle>
+            <AlertDescription className="text-xs">
+              <div className="mb-1">{t("flow.gfonts.desc")}</div>
+              {gfonts.families.length > 0 && (
+                <div className="font-mono text-[11px] text-muted-foreground">
+                  {gfonts.families.join(" · ")}
+                </div>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
         {sorted.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("flow.empty")}</p>
         ) : (
@@ -59,7 +79,21 @@ export function DataFlowTable({ network }: { network: NetworkResult }) {
               <tbody>
                 {sorted.map((d) => (
                   <tr key={d.domain} className="border-b last:border-b-0">
-                    <td className="py-2 pr-3 font-mono text-xs">{d.domain}</td>
+                    {/* Domain-Cell: max-w + truncate sorgt dafür, dass
+                        lange Domains in der schmalen 2-col-Layout-Zeile
+                        am ENDE ellipsieren (Ellipsis), nicht am Anfang
+                        abgeschnitten werden. Der vollständige Wert ist
+                        per Hover-Tooltip einsehbar. Davor kollabierte
+                        die Zelle in scroll-overflow + zeigte das
+                        Ende statt den erkennbaren Hostname-Anfang. */}
+                    <td className="py-2 pr-3 align-middle">
+                      <span
+                        className="block max-w-[200px] truncate font-mono text-xs"
+                        title={d.domain}
+                      >
+                        {d.domain}
+                      </span>
+                    </td>
                     <td className="py-2 pr-3">
                       <Badge className={countryColor(d.country)}>{d.country}</Badge>
                     </td>

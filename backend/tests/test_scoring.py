@@ -336,17 +336,24 @@ class TestHardCaps:
         assert result.score <= 50
 
     def test_google_fonts_external_cap(self):
+        # Phase 10: detector populates network.google_fonts; scoring
+        # reads the structured field rather than re-walking requests.
+        from app.modules.google_fonts_detector import detect_google_fonts
         net = make_network(requests=[
             make_request("https://fonts.googleapis.com/css?family=Roboto"),
         ])
+        net.google_fonts = detect_google_fonts(net)
         result = _base_compute_risk(network=net)
         assert "google_fonts_external" in _cap_codes(result)
-        assert result.score <= 65
+        # Phase 10 tightened from 65 → 55, aligned with policy_missing_user_rights.
+        assert result.score <= 55
 
     def test_google_fonts_gstatic_triggers_same_cap(self):
+        from app.modules.google_fonts_detector import detect_google_fonts
         net = make_network(requests=[
             make_request("https://fonts.gstatic.com/s/roboto/v30/file.woff2"),
         ])
+        net.google_fonts = detect_google_fonts(net)
         result = _base_compute_risk(network=net)
         assert "google_fonts_external" in _cap_codes(result)
 
@@ -452,6 +459,178 @@ class TestHardCaps:
         assert "no_privacy_policy" in codes
         assert "no_imprint" in codes
         assert result.score <= 30
+
+
+# ---------------------------------------------------------------------------
+# Cap → sub-score routing (HardCap.affected_subscores + _CAP_AFFECTS map)
+# ---------------------------------------------------------------------------
+#
+# The dashboard reads HardCap.affected_subscores to render per-sub-score
+# cap badges. The mapping lives in scoring._CAP_AFFECTS as a single
+# source of truth (Convention #1). The tests below pin that mapping at
+# three levels: shape (only valid sub-score names), specific entries
+# (regression guard for individual cap → sub-score links), and coverage
+# (every cap code that _compute_caps can emit must have an entry, so a
+# new cap added without a mapping entry breaks CI rather than silently
+# rendering without a badge).
+
+_VALID_SUBSCORE_NAMES = {"cookies", "tracking", "data_transfer", "privacy", "forms"}
+
+
+class TestCapAffectsMapping:
+    def test_central_mapping_uses_only_valid_subscore_names(self):
+        from app.modules.scoring import _CAP_AFFECTS
+        for code, subs in _CAP_AFFECTS.items():
+            for sub in subs:
+                assert sub in _VALID_SUBSCORE_NAMES, (
+                    f"Cap {code!r} maps to unknown sub-score {sub!r}; "
+                    f"allowed: {_VALID_SUBSCORE_NAMES}"
+                )
+
+    def test_security_caps_are_cross_cutting_empty_affects(self):
+        # Security caps (HTTPS / mixed-content / cert / DMARC / vuln-libs)
+        # have no sub-score representation, so their affected_subscores
+        # MUST be empty. The HardCapsList card still surfaces them; only
+        # the per-sub-score badges skip them.
+        from app.modules.scoring import _CAP_AFFECTS
+        for code in (
+            "no_https_enforcement", "mixed_content",
+            "cert_expired", "cert_expiring_soon",
+            "no_email_authentication",
+            "known_vulnerable_library", "outdated_vulnerable_library",
+        ):
+            assert _CAP_AFFECTS[code] == (), (
+                f"Security cap {code!r} should be cross-cutting "
+                f"(empty affected_subscores), got {_CAP_AFFECTS[code]}"
+            )
+
+    def test_google_fonts_external_affects_data_transfer_and_cookies(self):
+        # Pin the multi-affected example from the brief.
+        from app.modules.scoring import _CAP_AFFECTS
+        assert set(_CAP_AFFECTS["google_fonts_external"]) == {"data_transfer", "cookies"}
+
+    def test_pre_checked_consent_box_affects_forms_and_cookies(self):
+        from app.modules.scoring import _CAP_AFFECTS
+        assert set(_CAP_AFFECTS["pre_checked_consent_box"]) == {"forms", "cookies"}
+
+    def test_no_legal_basis_stated_affects_privacy_only(self):
+        from app.modules.scoring import _CAP_AFFECTS
+        assert _CAP_AFFECTS["no_legal_basis_stated"] == ("privacy",)
+
+    def test_emitted_caps_carry_affected_subscores_field(self):
+        # End-to-end: trigger a real cap, assert the field arrives
+        # populated on the HardCap instance (i.e. the post-hoc
+        # enrichment loop actually ran, not just the mapping is defined).
+        net = make_network(data_flow=[
+            make_flow("google-analytics.com", country="USA", categories=["analytics"]),
+        ])
+        result = _base_compute_risk(network=net)
+        cap = next(c for c in result.applied_caps if c.code == "us_analytics_no_consent")
+        assert set(cap.affected_subscores) == {"tracking", "data_transfer"}
+
+    def test_every_emitted_cap_code_has_mapping_entry(self):
+        # Coverage check: trigger as many caps as we can in one
+        # kitchen-sink scenario, then assert each emitted cap.code has
+        # a known _CAP_AFFECTS entry. A new cap added in scoring.py
+        # without a mapping entry breaks here. This is the load-bearing
+        # test for "do not silently drop the per-sub-score badge".
+        from app.modules.scoring import _CAP_AFFECTS
+
+        # Build a scenario that fires lots of caps at once:
+        #   - US analytics + marketing tracker (us_*_no_consent)
+        #   - EU CDN tracker hit (tdddg_third_party_*)
+        #   - missing privacy policy + missing imprint
+        #   - Google Fonts request
+        #   - tracking-variant YouTube widget
+        #   - WhatsApp contact channel without policy disclosure
+        #   - pre-checked consent form
+        from app.models import (
+            ConsentSimulation, ConsentUxAudit, DarkPatternFinding,
+        )
+        from .conftest import make_channel, make_widget
+
+        net = make_network(
+            requests=[
+                make_request("https://fonts.googleapis.com/css?family=Roboto"),
+            ],
+            data_flow=[
+                make_flow("google-analytics.com", country="USA", categories=["analytics"]),
+                make_flow("facebook.com", country="USA", categories=["marketing"]),
+                make_flow("cdn.jsdelivr.net", country="EU", categories=["cdn"]),
+            ],
+        )
+        # Re-run the GoogleFonts detector on the network so the cap
+        # actually fires (Phase-10 contract: scoring reads
+        # network.google_fonts.detected, not the requests list).
+        from app.modules.google_fonts_detector import detect_google_fonts
+        net.google_fonts = detect_google_fonts(net)
+
+        widgets = make_widgets([
+            make_widget(kind="youtube", category="video", privacy_enhanced=False),
+        ])
+        channels = make_channels([
+            make_channel(kind="whatsapp", country="USA", vendor="Meta"),
+        ])
+        # Coverage object whose third_country_transfers_disclosed=False
+        # → fires policy_silent_on_third_country_transfer +
+        # contact_channel_transfer_not_disclosed.
+        privacy = make_privacy(
+            coverage=_full_coverage(third_country=False, legal_basis=False),
+        )
+        # Pre-checked consent form → pre_checked_consent_box.
+        forms = make_form_report(
+            forms=[],
+            pii_forms=1, with_consent=1,
+        )
+        forms.summary["forms_with_pre_checked_consent"] = 1
+
+        # Consent dark pattern → consent_dark_pattern_high.
+        consent = ConsentSimulation(
+            enabled=True, accept_clicked=True,
+            cmp_detected=None, note="t",
+            ux_audit=ConsentUxAudit(
+                banner_detected=True, accept_found=True, reject_found=False,
+                findings=[DarkPatternFinding(
+                    code="no_direct_reject", severity="high", description="t",
+                )],
+            ),
+        )
+
+        result = _base_compute_risk(
+            network=net, widgets=widgets, channels=channels,
+            privacy=privacy, forms=forms, consent=consent,
+            has_policy=False, has_imprint=False,
+        )
+        emitted = {c.code for c in result.applied_caps}
+        # Sanity: scenario triggered enough caps to make the coverage
+        # check meaningful (not just one or two).
+        assert len(emitted) >= 6, (
+            f"kitchen-sink scenario fired only {len(emitted)} cap(s); "
+            f"check the scenario builders haven't drifted: {emitted}"
+        )
+        missing = emitted - set(_CAP_AFFECTS.keys())
+        assert not missing, (
+            f"Cap code(s) {missing} emitted by _compute_caps but missing "
+            f"from scoring._CAP_AFFECTS — add an entry there (or "
+            f"explicitly map to () for cross-cutting/security caps)."
+        )
+
+
+def _full_coverage(*, third_country: bool = True, legal_basis: bool = True):
+    """Local copy of the conftest helper to keep the new test class
+    self-contained — same shape, different defaults at call time."""
+    from app.models import PolicyTopicCoverage
+    return PolicyTopicCoverage(
+        legal_basis_stated=legal_basis,
+        data_categories_listed=True,
+        retention_period_stated=True,
+        third_party_recipients_listed=True,
+        third_country_transfers_disclosed=third_country,
+        user_rights_enumerated=True,
+        contact_for_data_protection=True,
+        cookie_section_present=True,
+        children_data_addressed=True,
+    )
 
 
 # ---------------------------------------------------------------------------

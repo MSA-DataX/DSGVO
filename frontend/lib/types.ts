@@ -108,6 +108,10 @@ export interface NetworkRequest {
   is_third_party: boolean;
   /** Phase 9c — Meta /tr, GA __utm.gif, or generic 1×1 marketing beacon. */
   is_tracking_pixel?: boolean;
+  /** Phase 11 — transferred bytes; null if Content-Length missing. */
+  response_size?: number | null;
+  /** Phase 11 — verbatim Content-Encoding header (gzip/br/identity/null). */
+  content_encoding?: string | null;
 }
 
 export interface DataFlowEntry {
@@ -125,9 +129,21 @@ export interface CrawlResult {
   imprint_url?: string | null;
 }
 
+export interface GoogleFontsCheck {
+  detected: boolean;
+  /** Font families parsed from googleapis.com URLs (e.g. ["Roboto", "Open Sans"]). */
+  families: string[];
+  /** Total binary requests to fonts.gstatic.com — severity signal. */
+  binary_count: number;
+  initiator_pages: string[];
+  css_url_samples: string[];
+}
+
 export interface NetworkResult {
   requests: NetworkRequest[];
   data_flow: DataFlowEntry[];
+  /** Phase 10 — LG München I 3 O 17493/20 check. Defaults to detected=false. */
+  google_fonts: GoogleFontsCheck;
 }
 
 export interface CookieEntry {
@@ -356,6 +372,10 @@ export interface HardCap {
   code: string;
   description: string;
   cap_value: number;
+  /** Sub-score names this cap is conceptually rooted in. Empty list
+   *  means cross-cutting (typically security caps whose domain is
+   *  not a sub-score). Mirrors backend HardCap.affected_subscores. */
+  affected_subscores: string[];
 }
 
 export interface Recommendation {
@@ -428,6 +448,8 @@ export interface ScanResponse {
   security?: SecurityAudit | null;
   vulnerable_libraries?: VulnerableLibrariesReport | null;
   consent?: ConsentSimulation | null;
+  /** Phase 11 — present when ScanRequest.performance_audit was true. */
+  performance?: PerformanceReport | null;
   id?: string | null;
   created_at?: string | null;
 }
@@ -440,6 +462,64 @@ export interface ScanRequest {
   privacy_policy_url?: string;
   /** Language for backend-generated prose (recommendations + AI summary/issues). */
   ui_language?: "en" | "de";
+  /** Phase 11 — opt-in performance audit (Web Vitals + network + assets). */
+  performance_audit?: boolean;
+}
+
+// --- Phase 11 — performance suite ----------------------------------------
+
+export interface WebVitals {
+  lcp_ms: number | null;
+  inp_ms: number | null;
+  cls: number | null;
+  fcp_ms: number | null;
+  ttfb_ms: number | null;
+}
+
+export interface RenderBlockingResource {
+  url: string;
+  resource_type: string;
+  size_bytes: number | null;
+}
+
+export interface OversizedAsset {
+  url: string;
+  resource_type: string;
+  size_bytes: number;
+  threshold_bytes: number;
+}
+
+export interface UncompressedResponse {
+  url: string;
+  resource_type: string;
+  size_bytes: number;
+  content_encoding: string | null;
+}
+
+export interface NetworkMetrics {
+  total_requests: number;
+  total_transfer_bytes: number;
+  requests_by_type: Record<string, number>;
+  bytes_by_type: Record<string, number>;
+  third_party_request_count: number;
+  third_party_transfer_bytes: number;
+  render_blocking: RenderBlockingResource[];
+}
+
+export interface AssetAudit {
+  oversized_images: OversizedAsset[];
+  oversized_scripts: OversizedAsset[];
+  uncompressed_responses: UncompressedResponse[];
+}
+
+export interface PerformanceReport {
+  web_vitals: WebVitals;
+  network_metrics: NetworkMetrics;
+  asset_audit: AssetAudit;
+  /** Linear 0-100, no caps. Every point is traceable via score_breakdown. */
+  score: number;
+  score_breakdown: Record<string, number>;
+  error: string | null;
 }
 
 // --- Streaming + history ---------------------------------------------------
